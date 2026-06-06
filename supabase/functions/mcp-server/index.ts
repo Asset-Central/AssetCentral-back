@@ -431,11 +431,11 @@ const RESOURCE_TEMPLATES: ResourceTemplateDef[] = [
       const [userResult, accountsResult] = await Promise.all([
         supabase
           .from("users")
-          .select("id, email, first_name, last_name, dni, created_at")
+          .select("id, full_name, nombre, apellido, dni, created_at")
           .eq("id", user_id)
           .maybeSingle(),
         supabase
-          .from("accounts")
+          .from("account")
           .select("id, platform, label, connection_status, last_sync, error_message")
           .eq("user_id", user_id)
           .order("platform"),
