@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Query, status
 
 from app.core.dependencies import get_current_user
+from app.schemas.asset import ValuePoint
 from app.schemas.portfolio import (
     CreatePortfolioRequest,
     Portfolio,
@@ -8,6 +11,8 @@ from app.schemas.portfolio import (
     UpdatePortfolioRequest,
 )
 from app.services.portfolio_service import PortfolioService
+
+RangeType = Literal["1h", "1d", "1w", "30d", "1y"]
 
 router = APIRouter(prefix="/portfolios", tags=["portfolios"])
 
@@ -41,3 +46,15 @@ async def update_portfolio(
 @router.delete("/{portfolio_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_portfolio(portfolio_id: str, user=Depends(get_current_user)):
     await PortfolioService.delete_portfolio(user_id=user.id, portfolio_id=portfolio_id)
+
+
+@router.get("/{portfolio_id}/value-history", response_model=list[ValuePoint])
+async def portfolio_value_history(
+    portfolio_id: str,
+    user=Depends(get_current_user),
+    range: RangeType = Query(default="30d"),
+):
+    """Valuación histórica de los activos de un portfolio específico."""
+    return await PortfolioService.get_value_history(
+        portfolio_id=portfolio_id, user_id=user.id, range=range
+    )

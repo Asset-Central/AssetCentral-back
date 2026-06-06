@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import HTTPException, status
 
 from app.core.supabase import supabase_admin
@@ -88,6 +90,67 @@ class PortfolioService:
     async def delete_portfolio(user_id: str, portfolio_id: str) -> None:
         await _fetch_portfolio_owned_by(portfolio_id, user_id)
         supabase_admin.table("portfolios").delete().eq("id", portfolio_id).execute()
+
+    @staticmethod
+    async def get_value_history(portfolio_id: str, user_id: str, range: str = "30d") -> list[dict]:
+        """Valuación histórica de los activos de un portfolio específico."""
+        # 1. Obtener asset_ids del portfolio
+        pa_res = (
+            supabase_admin.table("portfolio_assets")
+            .select("asset_id")
+            .eq("portfolio_id", portfolio_id)
+            .execute()
+        )
+        asset_ids = [r["asset_id"] for r in (pa_res.data or [])]
+        if not asset_ids:
+            return []
+
+        # 2. Obtener cuentas del usuario
+        accounts = (
+            supabase_admin.table("account")
+            .select("id")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        account_ids = [r["id"] for r in (accounts.data or [])]
+        if not account_ids:
+            return []
+
+        # 3. Calcular cutoff y granularidad
+        now = datetime.now(timezone.utc)
+        match range:
+            case "1h":
+                cutoff = (now - timedelta(hours=1)).isoformat(); agg = "minute"
+            case "1d":
+                cutoff = (now - timedelta(days=1)).isoformat(); agg = "hour"
+            case "1w":
+                cutoff = (now - timedelta(weeks=1)).isoformat(); agg = "day"
+            case "1y":
+                cutoff = (now - timedelta(days=365)).isoformat(); agg = "day"
+            case _:
+                cutoff = (now - timedelta(days=30)).isoformat(); agg = "day"
+
+        def _agg_key(ts: str) -> str:
+            return ts[:16] if agg == "minute" else ts[:13] if agg == "hour" else ts[:10]
+
+        # 4. Consultar historical_balances
+        rows = (
+            supabase_admin.table("historical_balances")
+            .select("recorded_at, total_valuation")
+            .in_("asset_id", asset_ids)
+            .in_("account_id", account_ids)
+            .gte("recorded_at", cutoff)
+            .order("recorded_at")
+            .execute()
+        )
+
+        bucket_map: dict[str, float] = {}
+        for row in (rows.data or []):
+            key = _agg_key(row["recorded_at"])
+            tv = float(row["total_valuation"]) if row.get("total_valuation") else 0.0
+            bucket_map[key] = bucket_map.get(key, 0.0) + tv
+
+        return [{"date": k, "total": v} for k, v in sorted(bucket_map.items())]
 
 
 # --- helpers ---
