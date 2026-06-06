@@ -57,6 +57,16 @@ PLATFORM_CONFIGS: list[PlatformConfig] = [
             ),
         ],
     ),
+    PlatformConfig(
+        platform=Platform.BINANCE,
+        display_name="Binance",
+        logo_url="/logos/binance.png",
+        fields=[
+            CredentialField(name="api_key", label="API Key", type="text",
+                            placeholder="Generala en Binance → Gestión de API"),
+            CredentialField(name="api_secret", label="Secret Key", type="password"),
+        ],
+    ),
 ]
 
 
@@ -81,6 +91,8 @@ class AccountService:
     async def link_account(user_id: str, data: LinkAccountRequest) -> Account:
         if data.platform == Platform.NACION:
             return await AccountService._link_prometeo(user_id, data)
+        if data.platform == Platform.BINANCE:
+            return await AccountService._link_binance(user_id, data)
         return await AccountService._link_generic(user_id, data)
 
     @staticmethod
@@ -173,6 +185,61 @@ class AccountService:
         except Exception:
             # La persistencia de balances puede fallar si el schema de historical_balances
             # no coincide con lo esperado — la cuenta queda activa igual
+            pass
+
+        return _row_to_account(account_row)
+
+    @staticmethod
+    async def _link_binance(user_id: str, data: LinkAccountRequest) -> Account:
+        """
+        Flujo Binance:
+          1. Valida credenciales y trae balances iniciales.
+          2. Guarda api_key + api_secret en Vault.
+          3. Inserta registro con last_sync y persiste holdings.
+        """
+        from app.services.connectors.binance import BinanceConnector
+        from app.services.asset_service import _persist_holdings
+
+        _cleanup_existing_account(user_id, data.platform)
+        connector = BinanceConnector(account_id="", credentials=data.credentials)
+
+        try:
+            holdings = await connector.get_holdings()
+        except ConnectorError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"No se pudo conectar con Binance: {exc}",
+            ) from exc
+
+        secret_name = f"account_creds_{user_id}_{data.platform.value}"
+        vault_result = supabase_admin.rpc(
+            "upsert_vault_secret",
+            {"p_secret": json.dumps(data.credentials), "p_name": secret_name},
+        ).execute()
+        secret_id = vault_result.data
+
+        total_usd = sum(h.total_valuation for h in holdings)
+        label = f"Binance — U$ {total_usd:,.2f}" if holdings else "Binance"
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result = (
+            supabase_admin.table("account")
+            .insert({
+                "user_id": user_id,
+                "platform": data.platform.value,
+                "label": label,
+                "connection_status": ConnectionStatus.ACTIVE.value,
+                "secret_id": str(secret_id),
+                "last_sync": now_iso,
+            })
+            .execute()
+        )
+        account_row = result.data[0]
+        account_id = account_row["id"]
+
+        try:
+            await _persist_holdings(account_id, holdings)
+        except Exception:
             pass
 
         return _row_to_account(account_row)

@@ -3,7 +3,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query
 
 from app.core.dependencies import get_current_user
-from app.schemas.asset import Asset, InflationPoint, PricePoint, ValuePoint
+from app.schemas.asset import Asset, InflationPoint, PerformancePoint, PricePoint, ValuePoint
 from app.services.asset_service import AssetService
 from app.services.inflation_service import get_inflation
 
@@ -24,6 +24,15 @@ async def value_history(
 ):
     """Valuación total del portafolio por el rango indicado."""
     return await AssetService.get_value_history(user_id=user.id, range=range)
+
+
+@router.get("/performance", response_model=list[PerformancePoint])
+async def performance(
+    user=Depends(get_current_user),
+    range: RangeType = Query(default="30d"),
+):
+    """Descomposición de rendimiento: market P&L vs flujos de capital por período."""
+    return await AssetService.get_performance(user_id=user.id, range=range)
 
 
 @router.get("/inflation", response_model=list[InflationPoint])

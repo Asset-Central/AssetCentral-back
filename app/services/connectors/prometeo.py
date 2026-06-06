@@ -119,11 +119,11 @@ class PrometeoConnector(BaseConnector):
             balance = float(account.get("balance", 0) or 0)
             number = account.get("number") or account.get("id") or "?"
 
+            currency_label = "ARS" if currency_str == "ARS" else "USD"
             holdings.append(
                 Holding(
-                    # ticker único por plataforma + moneda
                     ticker=f"PROMETEO_{currency_str}",
-                    external_name=f"Cuenta Prometeo {number}",
+                    external_name=f"Banco Nación - {currency_label}",
                     asset_type=AssetType.CASH,
                     currency=currency,
                     platform=Platform.NACION,

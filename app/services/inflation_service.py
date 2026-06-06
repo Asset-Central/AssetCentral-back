@@ -22,12 +22,13 @@ async def get_inflation(currency: str) -> list[dict]:
 
 
 async def _fetch_ars() -> list[dict]:
-    """INDEC IPC variación mensual — datos.gob.ar series API."""
+    """INDEC IPC — calcula variación mensual desde el índice de precios (últimos 36 meses)."""
     url = "https://apis.datos.gob.ar/series/api/series/"
     params = {
         "ids": "148.3_INIVELNAL_DICI_M_26",
-        "limit": 36,
+        "limit": 37,   # +1 para poder calcular el primer cambio
         "format": "json",
+        "sort": "desc",  # más recientes primero, para que limit traiga los últimos
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -35,14 +36,18 @@ async def _fetch_ars() -> list[dict]:
             resp.raise_for_status()
         data: Any = resp.json()
         rows = data.get("data") or []
+        clean = sorted(
+            [(str(r[0])[:7], float(r[1])) for r in rows if len(r) >= 2 and r[1] is not None],
+            key=lambda x: x[0],
+        )
         points = []
-        for row in rows:
-            if len(row) < 2 or row[1] is None:
-                continue
-            date = str(row[0])[:7]  # "YYYY-MM"
-            rate = float(row[1])
-            points.append({"date": date, "rate": round(rate, 4)})
-        return sorted(points, key=lambda x: x["date"])
+        for i in range(1, len(clean)):
+            _, prev_val = clean[i - 1]
+            curr_date, curr_val = clean[i]
+            if prev_val:
+                rate = (curr_val - prev_val) / prev_val * 100
+                points.append({"date": curr_date, "rate": round(rate, 4)})
+        return points
     except Exception as exc:
         log.warning("ARS inflation fetch failed: %s", exc)
         return []
@@ -50,7 +55,7 @@ async def _fetch_ars() -> list[dict]:
 
 async def _fetch_usd() -> list[dict]:
     """BLS CPI All Urban Consumers (CUUR0000SA0) — calcula variación mensual."""
-    url = "https://api.bls.gov/publicAPI/v1/timeseries/data/CUUR0000SA0"
+    url = "https://api.bls.gov/publicAPI/v1/timeseries/data/"  # POST endpoint sin series en path
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(url, json={"seriesid": ["CUUR0000SA0"]})
@@ -59,7 +64,6 @@ async def _fetch_usd() -> list[dict]:
         if not series_list:
             return []
         items: list[dict] = series_list[0].get("data", [])
-        # Filtrar solo meses (excluir anuales) y ordenar ascendente
         monthly = [i for i in items if i.get("period", "").startswith("M")]
         monthly.sort(key=lambda x: (x["year"], x["period"]))
         points = []
@@ -72,7 +76,7 @@ async def _fetch_usd() -> list[dict]:
                 rate = (val - prev_val) / prev_val * 100
                 points.append({"date": date, "rate": round(rate, 4)})
             prev_val = val
-        return points[-36:]  # últimos 3 años
+        return points[-36:]
     except Exception as exc:
         log.warning("USD inflation fetch failed: %s", exc)
         return []

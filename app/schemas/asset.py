@@ -48,3 +48,10 @@ class ValuePoint(BaseModel):
 class InflationPoint(BaseModel):
     date: str    # "YYYY-MM"
     rate: float  # monthly % change
+
+
+class PerformancePoint(BaseModel):
+    date: str
+    total: float        # total portfolio value at this bucket
+    market_pnl: float   # Δprice × prev_qty  (market price changes)
+    capital_flow: float  # Δqty × curr_price  (deposits / withdrawals)

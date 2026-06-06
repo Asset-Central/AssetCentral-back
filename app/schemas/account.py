@@ -10,6 +10,7 @@ class Platform(str, Enum):
     IOL = "iol"
     MERCADOPAGO = "mercadopago"
     NACION = "nacion"
+    BINANCE = "binance"
 
 
 class ConnectionStatus(str, Enum):
