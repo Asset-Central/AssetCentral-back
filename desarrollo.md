@@ -242,7 +242,7 @@ El servidor MCP original (`supabase/functions/mcp-server/index.ts`) era una vers
 
 ### Archivo: `supabase/functions/mcp-server/index.ts`
 
-**Versión desplegada:** v16 (proyecto `geqltnpxydhpwysapexz`)
+**Versión desplegada:** v21 (proyecto `geqltnpxydhpwysapexz`)
 
 #### Cliente Supabase
 
