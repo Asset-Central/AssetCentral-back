@@ -35,7 +35,7 @@ Deno.serve(async () => {
   await Promise.all(
     (accounts as VaultRow[]).map(async (row) => {
       try {
-        if (row.platform !== "prometeo") return;
+        if (row.platform !== "nacion") return;
 
         const credentials = JSON.parse(row.credentials);
         const asset = await fetchPrometeoBalance(credentials);
