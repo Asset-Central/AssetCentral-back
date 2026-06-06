@@ -135,36 +135,6 @@ function decodeCursor(cursor: string): number {
   }
 }
 
-// ==========================================
-// Embedding Generation (OpenAI)
-// Returns null when OPENAI_API_KEY is not set
-// or the API call fails — search degrades to
-// BM25-only mode gracefully.
-// ==========================================
-
-async function generateEmbedding(text: string): Promise<number[] | null> {
-  const apiKey = Deno.env.get("OPENAI_API_KEY");
-  if (!apiKey) return null;
-  try {
-    const res = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "text-embedding-3-small",
-        input: text,
-        dimensions: 1536,
-      }),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json.data?.[0]?.embedding ?? null;
-  } catch {
-    return null;
-  }
-}
 
 // ==========================================
 // Schema Fetcher (shared by tool + resource)
@@ -230,14 +200,19 @@ const TOOLS: ToolDef[] = [
           description:
             "Opaque pagination cursor returned as `nextCursor` in a previous response",
         },
+        query_embedding: {
+          type: "array",
+          items: { type: "number" },
+          description:
+            "Optional pre-computed 1536-dim embedding vector. When provided activates the vector leg of RRF (BM25 + vector). Omit to use BM25 + trigram only.",
+        },
       },
       required: ["query"],
     },
-    handler: async ({ query, limit = 10, cursor }) => {
+    handler: async ({ query, limit = 10, cursor, query_embedding }) => {
       const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);
       const offset = cursor ? decodeCursor(String(cursor)) : 0;
-
-      const embedding = await generateEmbedding(String(query));
+      const embedding = Array.isArray(query_embedding) ? query_embedding : null;
       const mode = embedding ? "hybrid RRF (BM25 + vector)" : "BM25 / trigram";
 
       const { data, error } = await supabase.rpc("search_assets_hybrid_rrf", {
