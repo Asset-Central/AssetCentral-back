@@ -2,6 +2,9 @@
 -- Called by the MCP server's docs://schema/assetcentral resource and
 -- the get_database_schema tool.
 
+-- Drop first so we can change the return type if the function already exists.
+DROP FUNCTION IF EXISTS public.get_schema_metadata();
+
 CREATE OR REPLACE FUNCTION public.get_schema_metadata()
 RETURNS TABLE (
   schema_name    text,
