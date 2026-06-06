@@ -22,7 +22,7 @@ class Currency(str, Enum):
 
 class Asset(BaseModel):
     ticker: str
-    name: str | None = None          # assets.external_name
+    name: str | None = None
     asset_type: AssetType | None = None
     platform: Platform | None = None
     currency: Currency | None = None
@@ -31,3 +31,15 @@ class Asset(BaseModel):
     unit_price: float | None = None
     total_valuation: float | None = None
     recorded_at: datetime | None = None
+    daily_change_pct: float | None = None
+
+
+class PricePoint(BaseModel):
+    date: str
+    unit_price: float
+    total_valuation: float
+
+
+class ValuePoint(BaseModel):
+    date: str
+    total: float

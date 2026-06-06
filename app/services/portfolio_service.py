@@ -79,7 +79,6 @@ class PortfolioService:
         if patch:
             supabase_admin.table("portfolios").update(patch).eq("id", portfolio_id).execute()
 
-        # assets=None → no tocar los activos existentes (comportamiento patch)
         if data.assets is not None:
             await _set_portfolio_assets(portfolio_id, data.assets)
 
@@ -120,22 +119,26 @@ async def _fetch_portfolio_owned_by(portfolio_id: str, user_id: str) -> Portfoli
 
 async def _set_portfolio_assets(portfolio_id: str, assets: list[PortfolioAssetInput]) -> None:
     supabase_admin.table("portfolio_assets").delete().eq("portfolio_id", portfolio_id).execute()
-    if assets:
-        asset_lookup = (
-            supabase_admin.table("assets")
-            .select("id, ticker, platform")
-            .in_("ticker", [a.ticker for a in assets])
-            .execute()
-        )
-        id_map = {(r["ticker"], r["platform"]): r["id"] for r in asset_lookup.data}
-        rows = [
-            {
-                "portfolio_id": portfolio_id,
-                "asset_id": id_map[(a.ticker, a.platform.value)],
-                "target_share": a.target_share,
-            }
-            for a in assets
-        ]
+    if not assets:
+        return
+    tickers = [a.ticker for a in assets]
+    assets_res = (
+        supabase_admin.table("assets")
+        .select("id, ticker")
+        .in_("ticker", tickers)
+        .execute()
+    )
+    ticker_to_id = {r["ticker"]: r["id"] for r in assets_res.data}
+    rows = [
+        {
+            "portfolio_id": portfolio_id,
+            "asset_id": ticker_to_id[a.ticker],
+            "target_share": a.target_share,
+        }
+        for a in assets
+        if a.ticker in ticker_to_id
+    ]
+    if rows:
         supabase_admin.table("portfolio_assets").insert(rows).execute()
 
 
@@ -144,10 +147,10 @@ def _row_to_portfolio(row: dict) -> Portfolio:
     assets = [
         PortfolioAsset(
             ticker=pa["assets"]["ticker"],
-            platform=pa["assets"]["platform"],
             target_share=pa.get("target_share"),
         )
         for pa in pas
+        if pa.get("assets")
     ]
     return Portfolio(
         id=row["id"],
