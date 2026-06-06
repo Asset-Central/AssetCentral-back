@@ -71,7 +71,7 @@ async def _persist_holdings(account_id: str, holdings: list[Holding]) -> None:
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # Upsert en catálogo global de assets
+    # Upsert en catálogo global de assets; recuperar IDs para historical_balances
     asset_rows = [
         {
             "ticker": h.ticker,
@@ -82,13 +82,19 @@ async def _persist_holdings(account_id: str, holdings: list[Holding]) -> None:
         }
         for h in holdings
     ]
-    supabase_admin.table("assets").upsert(asset_rows, on_conflict="ticker").execute()
+    upserted = (
+        supabase_admin.table("assets")
+        .upsert(asset_rows, on_conflict="ticker,platform")
+        .select("id, ticker, platform")
+        .execute()
+    )
+    id_map = {(r["ticker"], r["platform"]): r["id"] for r in upserted.data}
 
     # Insert en historical_balances (serie temporal — nunca se reemplaza)
     balance_rows = [
         {
             "account_id": account_id,
-            "asset_ticker": h.ticker,
+            "asset_id": id_map[(h.ticker, h.platform.value)],
             "quantity": h.quantity,
             "unit_price": h.unit_price,
             "total_valuation": h.total_valuation,

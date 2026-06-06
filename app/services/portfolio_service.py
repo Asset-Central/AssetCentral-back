@@ -12,7 +12,7 @@ from app.schemas.portfolio import (
     UpdatePortfolioRequest,
 )
 
-_PORTFOLIO_ASSETS_SELECT = "*, portfolio_assets(asset_ticker, target_share)"
+_PORTFOLIO_ASSETS_SELECT = "*, portfolio_assets(asset_id, target_share, assets(ticker, platform))"
 
 
 class PortfolioService:
@@ -121,10 +121,17 @@ async def _fetch_portfolio_owned_by(portfolio_id: str, user_id: str) -> Portfoli
 async def _set_portfolio_assets(portfolio_id: str, assets: list[PortfolioAssetInput]) -> None:
     supabase_admin.table("portfolio_assets").delete().eq("portfolio_id", portfolio_id).execute()
     if assets:
+        asset_lookup = (
+            supabase_admin.table("assets")
+            .select("id, ticker, platform")
+            .in_("ticker", [a.ticker for a in assets])
+            .execute()
+        )
+        id_map = {(r["ticker"], r["platform"]): r["id"] for r in asset_lookup.data}
         rows = [
             {
                 "portfolio_id": portfolio_id,
-                "asset_ticker": a.ticker,
+                "asset_id": id_map[(a.ticker, a.platform.value)],
                 "target_share": a.target_share,
             }
             for a in assets
@@ -135,7 +142,11 @@ async def _set_portfolio_assets(portfolio_id: str, assets: list[PortfolioAssetIn
 def _row_to_portfolio(row: dict) -> Portfolio:
     pas = row.get("portfolio_assets") or []
     assets = [
-        PortfolioAsset(ticker=pa["asset_ticker"], target_share=pa.get("target_share"))
+        PortfolioAsset(
+            ticker=pa["assets"]["ticker"],
+            platform=pa["assets"]["platform"],
+            target_share=pa.get("target_share"),
+        )
         for pa in pas
     ]
     return Portfolio(

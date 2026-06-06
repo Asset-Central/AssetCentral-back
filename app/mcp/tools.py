@@ -76,14 +76,14 @@ async def get_portfolios(user_id: str) -> list[dict]:
     """Lista los portfolios del usuario con su valuación total."""
     portfolios = (
         supabase_admin.table("portfolios")
-        .select("id, name, description, created_at, portfolio_assets(asset_ticker)")
+        .select("id, name, description, created_at, portfolio_assets(asset_id, assets(ticker, platform))")
         .eq("user_id", user_id)
         .execute()
     )
 
     result = []
     for p in portfolios.data:
-        tickers = [pa["asset_ticker"] for pa in (p.get("portfolio_assets") or [])]
+        tickers = [pa["assets"]["ticker"] for pa in (p.get("portfolio_assets") or [])]
 
         balances = (
             supabase_admin.rpc(

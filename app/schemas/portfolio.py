@@ -3,18 +3,21 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, model_validator
 
+from .account import Platform
 from .asset import Currency
 
 
 class PortfolioAsset(BaseModel):
     """Activo dentro de un portfolio, con su target share opcional."""
     ticker: str
+    platform: Platform
     target_share: Annotated[float, Field(gt=0, le=100)] | None = None
 
 
 class PortfolioAssetInput(BaseModel):
     """Input para crear/actualizar un activo en el portfolio."""
     ticker: str
+    platform: Platform
     target_share: Annotated[float, Field(gt=0, le=100)] | None = None
 
 
