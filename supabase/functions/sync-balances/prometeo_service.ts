@@ -3,6 +3,7 @@
  * Consumido por el worker de sincronización en segundo plano (pg_cron → Edge Function).
  *
  * Flujo: login → GET /account/balances/ → logout → retorna asset estandarizado.
+ * Si la session key expira antes de usarse, se re-autentica automáticamente (1 reintento).
  */
 
 const PROMETEO_BASE = "https://banking.sandbox.prometeoapi.com";
@@ -50,6 +51,17 @@ export interface PrometeoAsset {
 }
 
 // -------------------------------------------------------------------------- //
+//  Errores                                                                     //
+// -------------------------------------------------------------------------- //
+
+class SessionExpiredError extends Error {
+  constructor() {
+    super("Sesión de Prometeo expirada o inválida.");
+    this.name = "SessionExpiredError";
+  }
+}
+
+// -------------------------------------------------------------------------- //
 //  Helpers internos                                                            //
 // -------------------------------------------------------------------------- //
 
@@ -81,7 +93,6 @@ async function prometeoLogin(
 
   const data: LoginResponse = await resp.json();
 
-  // El sandbox puede devolver "logged_in" o "success"
   if (data.status !== "logged_in" && data.status !== "success") {
     throw new Error(
       `Login rechazado por Prometeo (status="${data.status}"). ` +
@@ -97,7 +108,6 @@ async function prometeoLogin(
 }
 
 async function prometeoLogout(key: string, apiKey: string): Promise<void> {
-  // Best-effort: un fallo en logout no es crítico
   try {
     await fetch(`${PROMETEO_BASE}/logout/`, {
       method: "POST",
@@ -121,15 +131,24 @@ async function getArsBalance(
     headers: apiHeaders(apiKey),
   });
 
+  // 401 indica session key inválida o expirada
+  if (resp.status === 401) {
+    throw new SessionExpiredError();
+  }
+
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`Prometeo balances HTTP ${resp.status}: ${text}`);
   }
 
   const data: BalancesResponse = await resp.json();
-  const accounts: PrometeoAccount[] = data.accounts ?? [];
 
-  // Busca la cuenta en ARS (puede haber varias; tomamos la primera)
+  // Prometeo también puede indicar sesión expirada en el body con 200
+  if (data.status === "session_expired" || data.status === "not_authorized") {
+    throw new SessionExpiredError();
+  }
+
+  const accounts: PrometeoAccount[] = data.accounts ?? [];
   const arsAccount = accounts.find(
     (acc) => acc.currency?.toUpperCase() === "ARS",
   );
@@ -142,6 +161,29 @@ async function getArsBalance(
   }
 
   return Number(arsAccount.balance ?? 0);
+}
+
+/**
+ * Hace login, obtiene el balance y desloguea.
+ * Si la session key expira justo entre el login y el fetch (SessionExpiredError),
+ * reintenta una sola vez con una nueva sesión antes de propagar el error.
+ */
+async function fetchBalanceWithRetry(
+  credentials: PrometeoCredentials,
+  apiKey: string,
+  retried = false,
+): Promise<number> {
+  const key = await prometeoLogin(credentials, apiKey);
+  try {
+    return await getArsBalance(key, apiKey);
+  } catch (err) {
+    if (err instanceof SessionExpiredError && !retried) {
+      return fetchBalanceWithRetry(credentials, apiKey, true);
+    }
+    throw err;
+  } finally {
+    await prometeoLogout(key, apiKey);
+  }
 }
 
 // -------------------------------------------------------------------------- //
@@ -158,21 +200,12 @@ async function getArsBalance(
 export async function fetchPrometeoBalance(
   credentials: PrometeoCredentials,
 ): Promise<PrometeoAsset> {
-  // La API key vive en los secrets de la Edge Function (Supabase Dashboard → Edge Functions → Secrets)
-  const apiKey = env.get("PROMETEO_API_KEY");
+  const apiKey = Deno.env.get("PROMETEO_API_KEY");
   if (!apiKey) {
     throw new Error("Falta la variable de entorno PROMETEO_API_KEY.");
   }
 
-  const key = await prometeoLogin(credentials, apiKey);
-
-  let balance: number;
-  try {
-    balance = await getArsBalance(key, apiKey);
-  } finally {
-    // Logout siempre, incluso si falla la obtención del balance
-    await prometeoLogout(key, apiKey);
-  }
+  const balance = await fetchBalanceWithRetry(credentials, apiKey);
 
   return {
     ticker: "ARS",
