@@ -107,8 +107,10 @@ CREATE TRIGGER portfolios_updated_at
 CREATE TABLE public.portfolio_assets (
     portfolio_id UUID    NOT NULL REFERENCES public.portfolios(id) ON DELETE CASCADE,
     asset_ticker VARCHAR NOT NULL REFERENCES public.assets(ticker) ON DELETE CASCADE,
+    target_share NUMERIC(5,2),
     assigned_at  TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (portfolio_id, asset_ticker)
+    PRIMARY KEY (portfolio_id, asset_ticker),
+    CONSTRAINT target_share_range CHECK (target_share IS NULL OR (target_share > 0 AND target_share <= 100))
 );
 
 ALTER TABLE public.portfolio_assets ENABLE ROW LEVEL SECURITY;
@@ -119,6 +121,31 @@ CREATE POLICY "portfolio_assets: solo el dueño" ON public.portfolio_assets FOR 
             WHERE p.id = portfolio_id AND p.user_id = auth.uid()
         )
     );
+
+-- Trigger deferrable: valida suma = 100 al final de la transacción
+CREATE OR REPLACE FUNCTION public.check_portfolio_shares()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $$
+DECLARE
+    v_pid UUID := COALESCE(NEW.portfolio_id, OLD.portfolio_id);
+    v_total NUMERIC; v_null_cnt INTEGER; v_asset_cnt INTEGER;
+BEGIN
+    SELECT COUNT(*), COUNT(*) FILTER (WHERE target_share IS NULL), COALESCE(SUM(target_share), 0)
+    INTO v_asset_cnt, v_null_cnt, v_total FROM portfolio_assets WHERE portfolio_id = v_pid;
+    IF v_null_cnt = v_asset_cnt THEN RETURN NEW; END IF;
+    IF v_null_cnt > 0 THEN
+        RAISE EXCEPTION 'target_share debe definirse en todos los activos o en ninguno del portfolio';
+    END IF;
+    IF ABS(v_total - 100) > 0.01 THEN
+        RAISE EXCEPTION 'La suma de target_share debe ser 100 (suma actual: %)', ROUND(v_total, 2);
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER validate_portfolio_shares
+    AFTER INSERT OR UPDATE OR DELETE ON public.portfolio_assets
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION public.check_portfolio_shares();
 
 -- =============================================================================
 -- 6. historical_balances — serie temporal de posiciones por cuenta
@@ -192,13 +219,15 @@ CREATE OR REPLACE FUNCTION public.get_portfolio_balances(p_portfolio_id UUID, p_
 RETURNS TABLE (
     asset_ticker VARCHAR, external_name VARCHAR, asset_type asset_class_type,
     currency currency_type, platform platform_type,
-    total_quantity NUMERIC, unit_price NUMERIC, total_valuation NUMERIC
+    total_quantity NUMERIC, unit_price NUMERIC, total_valuation NUMERIC,
+    target_share NUMERIC
 ) LANGUAGE SQL STABLE SECURITY DEFINER AS $$
     SELECT
         a.ticker, a.external_name, a.asset_type, a.currency, a.platform,
         COALESCE(SUM(latest.quantity), 0),
         AVG(latest.unit_price),
-        COALESCE(SUM(latest.total_valuation), 0)
+        COALESCE(SUM(latest.total_valuation), 0),
+        pa.target_share
     FROM public.portfolio_assets pa
     JOIN public.assets a ON a.ticker = pa.asset_ticker
     LEFT JOIN LATERAL (
@@ -210,6 +239,6 @@ RETURNS TABLE (
     ) latest ON TRUE
     WHERE pa.portfolio_id = p_portfolio_id
       AND EXISTS (SELECT 1 FROM public.portfolios p WHERE p.id = p_portfolio_id AND p.user_id = p_user_id)
-    GROUP BY a.ticker, a.external_name, a.asset_type, a.currency, a.platform;
+    GROUP BY a.ticker, a.external_name, a.asset_type, a.currency, a.platform, pa.target_share;
 $$;
 REVOKE EXECUTE ON FUNCTION public.get_portfolio_balances(UUID, UUID) FROM anon, authenticated;

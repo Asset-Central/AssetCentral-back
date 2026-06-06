@@ -5,10 +5,14 @@ from app.schemas.asset import Currency
 from app.schemas.portfolio import (
     CreatePortfolioRequest,
     Portfolio,
+    PortfolioAsset,
+    PortfolioAssetInput,
     PortfolioAssetSummary,
     PortfolioSummary,
     UpdatePortfolioRequest,
 )
+
+_PORTFOLIO_ASSETS_SELECT = "*, portfolio_assets(asset_ticker, target_share)"
 
 
 class PortfolioService:
@@ -17,7 +21,7 @@ class PortfolioService:
     async def list_portfolios(user_id: str) -> list[Portfolio]:
         result = (
             supabase_admin.table("portfolios")
-            .select("*, portfolio_assets(asset_ticker)")
+            .select(_PORTFOLIO_ASSETS_SELECT)
             .eq("user_id", user_id)
             .order("created_at")
             .execute()
@@ -33,8 +37,8 @@ class PortfolioService:
         )
         portfolio_id = result.data[0]["id"]
 
-        if data.asset_tickers:
-            await _set_portfolio_tickers(portfolio_id, data.asset_tickers)
+        if data.assets:
+            await _set_portfolio_assets(portfolio_id, data.assets)
 
         return await _fetch_portfolio(portfolio_id)
 
@@ -50,12 +54,8 @@ class PortfolioService:
         )
 
         assets = [_row_to_portfolio_asset(row) for row in (balances.data or [])]
-        total_ars = sum(
-            a.total_valuation for a in assets if a.currency == Currency.ARS
-        )
-        total_usd = sum(
-            a.total_valuation for a in assets if a.currency == Currency.USD
-        )
+        total_ars = sum(a.total_valuation for a in assets if a.currency == Currency.ARS)
+        total_usd = sum(a.total_valuation for a in assets if a.currency == Currency.USD)
 
         return PortfolioSummary(
             portfolio=portfolio,
@@ -79,8 +79,9 @@ class PortfolioService:
         if patch:
             supabase_admin.table("portfolios").update(patch).eq("id", portfolio_id).execute()
 
-        if data.asset_tickers is not None:
-            await _set_portfolio_tickers(portfolio_id, data.asset_tickers)
+        # assets=None → no tocar los activos existentes (comportamiento patch)
+        if data.assets is not None:
+            await _set_portfolio_assets(portfolio_id, data.assets)
 
         return await _fetch_portfolio(portfolio_id)
 
@@ -95,7 +96,7 @@ class PortfolioService:
 async def _fetch_portfolio(portfolio_id: str) -> Portfolio:
     result = (
         supabase_admin.table("portfolios")
-        .select("*, portfolio_assets(asset_ticker)")
+        .select(_PORTFOLIO_ASSETS_SELECT)
         .eq("id", portfolio_id)
         .single()
         .execute()
@@ -106,7 +107,7 @@ async def _fetch_portfolio(portfolio_id: str) -> Portfolio:
 async def _fetch_portfolio_owned_by(portfolio_id: str, user_id: str) -> Portfolio:
     result = (
         supabase_admin.table("portfolios")
-        .select("*, portfolio_assets(asset_ticker)")
+        .select(_PORTFOLIO_ASSETS_SELECT)
         .eq("id", portfolio_id)
         .eq("user_id", user_id)
         .single()
@@ -117,20 +118,31 @@ async def _fetch_portfolio_owned_by(portfolio_id: str, user_id: str) -> Portfoli
     return _row_to_portfolio(result.data)
 
 
-async def _set_portfolio_tickers(portfolio_id: str, tickers: list[str]) -> None:
+async def _set_portfolio_assets(portfolio_id: str, assets: list[PortfolioAssetInput]) -> None:
     supabase_admin.table("portfolio_assets").delete().eq("portfolio_id", portfolio_id).execute()
-    if tickers:
-        rows = [{"portfolio_id": portfolio_id, "asset_ticker": t} for t in tickers]
+    if assets:
+        rows = [
+            {
+                "portfolio_id": portfolio_id,
+                "asset_ticker": a.ticker,
+                "target_share": a.target_share,
+            }
+            for a in assets
+        ]
         supabase_admin.table("portfolio_assets").insert(rows).execute()
 
 
 def _row_to_portfolio(row: dict) -> Portfolio:
-    tickers = [pa["asset_ticker"] for pa in (row.get("portfolio_assets") or [])]
+    pas = row.get("portfolio_assets") or []
+    assets = [
+        PortfolioAsset(ticker=pa["asset_ticker"], target_share=pa.get("target_share"))
+        for pa in pas
+    ]
     return Portfolio(
         id=row["id"],
         name=row["name"],
         description=row.get("description"),
-        asset_tickers=tickers,
+        assets=assets,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -146,4 +158,5 @@ def _row_to_portfolio_asset(row: dict) -> PortfolioAssetSummary:
         total_quantity=float(row["total_quantity"]),
         unit_price=float(row["unit_price"]) if row.get("unit_price") is not None else None,
         total_valuation=float(row["total_valuation"]),
+        target_share=float(row["target_share"]) if row.get("target_share") is not None else None,
     )
