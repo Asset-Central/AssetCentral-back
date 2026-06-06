@@ -3,8 +3,9 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query
 
 from app.core.dependencies import get_current_user
-from app.schemas.asset import Asset, PricePoint, ValuePoint
+from app.schemas.asset import Asset, InflationPoint, PricePoint, ValuePoint
 from app.services.asset_service import AssetService
+from app.services.inflation_service import get_inflation
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -23,6 +24,15 @@ async def value_history(
 ):
     """Valuación total del portafolio por el rango indicado."""
     return await AssetService.get_value_history(user_id=user.id, range=range)
+
+
+@router.get("/inflation", response_model=list[InflationPoint])
+async def inflation(
+    _user=Depends(get_current_user),
+    currency: str = Query(default="ARS"),
+):
+    """Inflación mensual para ARS (INDEC) o USD (BLS CPI)."""
+    return await get_inflation(currency)
 
 
 @router.get("/{ticker}/history", response_model=list[PricePoint])

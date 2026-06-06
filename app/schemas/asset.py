@@ -43,3 +43,8 @@ class PricePoint(BaseModel):
 class ValuePoint(BaseModel):
     date: str
     total: float
+
+
+class InflationPoint(BaseModel):
+    date: str    # "YYYY-MM"
+    rate: float  # monthly % change
