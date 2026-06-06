@@ -136,6 +136,37 @@ function decodeCursor(cursor: string): number {
 }
 
 // ==========================================
+// Embedding Generation (OpenAI)
+// Returns null when OPENAI_API_KEY is not set
+// or the API call fails — search degrades to
+// BM25-only mode gracefully.
+// ==========================================
+
+async function generateEmbedding(text: string): Promise<number[] | null> {
+  const apiKey = Deno.env.get("OPENAI_API_KEY");
+  if (!apiKey) return null;
+  try {
+    const res = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: text,
+        dimensions: 1536,
+      }),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.data?.[0]?.embedding ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ==========================================
 // Schema Fetcher (shared by tool + resource)
 // ==========================================
 
@@ -206,8 +237,12 @@ const TOOLS: ToolDef[] = [
       const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);
       const offset = cursor ? decodeCursor(String(cursor)) : 0;
 
+      const embedding = await generateEmbedding(String(query));
+      const mode = embedding ? "hybrid RRF (BM25 + vector)" : "BM25 / trigram";
+
       const { data, error } = await supabase.rpc("search_assets_hybrid_rrf", {
         search_query: query,
+        query_embedding: embedding,
         page_limit: safeLimit,
         offset_val: offset,
       });
@@ -217,7 +252,7 @@ const TOOLS: ToolDef[] = [
           content: [
             {
               type: "text",
-              text: `**Search failed:** ${error.message}\n\n_Ensure the \`search_assets_hybrid_rrf\` RPC exists in the database._`,
+              text: `**Search failed:** ${error.message}\n\n_Ensure the \`search_assets_hybrid_rrf\` RPC exists (migration 20240002)._`,
             },
           ],
           isError: true,
@@ -235,7 +270,7 @@ const TOOLS: ToolDef[] = [
         content: [
           {
             type: "text",
-            text: `## Asset Search Results\n\n**Query:** ${query}  \n**Showing:** ${results.length} result(s) (offset ${offset})\n\n${table}${nextCursor}`,
+            text: `## Asset Search Results\n\n**Query:** ${query}  \n**Mode:** ${mode}  \n**Showing:** ${results.length} result(s) (offset ${offset})\n\n${table}${nextCursor}`,
           },
         ],
       };
