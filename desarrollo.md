@@ -242,7 +242,7 @@ El servidor MCP original (`supabase/functions/mcp-server/index.ts`) era una vers
 
 ### Archivo: `supabase/functions/mcp-server/index.ts`
 
-**Versión desplegada:** v16 (proyecto `geqltnpxydhpwysapexz`)
+**Versión desplegada:** v21 (proyecto `geqltnpxydhpwysapexz`)
 
 #### Cliente Supabase
 
@@ -305,15 +305,53 @@ El router de `resources/read` resuelve primero recursos estáticos por URI exact
 
 | Método | Notas |
 | :--- | :--- |
-| `initialize` | Declara capabilities: `tools`, `resources` (con `subscribe: false`) |
+| `initialize` | Declara capabilities: `tools`, `resources` (con `subscribe: false`), `prompts` |
 | `ping` | Retorna `{}` |
 | `tools/list` | Lista los 3 tools con su `inputSchema` |
 | `tools/call` | Despacha al handler correspondiente |
 | `resources/list` | Lista los 2 recursos estáticos |
-| `resources/templates/list` | **Nuevo** — lista el template dinámico de perfil de usuario |
+| `resources/templates/list` | Lista el template dinámico de perfil de usuario |
 | `resources/read` | Resuelve estáticos y dinámicos; retorna 404 MCP si no hay match |
+| `prompts/list` | **Nuevo (v2.1)** — lista los 4 templates de asesoramiento financiero |
+| `prompts/get` | **Nuevo (v2.1)** — renderiza un template con los argumentos provistos; valida required args |
 | Notificaciones (sin `id`) | Responde `202 No Content` sin body |
 | Batch JSON-RPC | Procesa arrays de mensajes en paralelo con `Promise.all` |
+
+---
+
+#### Prompt Templates (v2.1.0)
+
+Los prompts MCP son templates parametrizados que el host inyecta como mensajes al LLM. Permiten disparar flujos de análisis financiero completos con una sola invocación.
+
+| Nombre | Argumentos requeridos | Argumentos opcionales | Descripción |
+| :--- | :--- | :--- | :--- |
+| `hedge_instrument` | `user_id`, `instrument` | — | Plan de cobertura (hedge) contra un instrumento (moneda, acción, etc.) |
+| `liquidity_analysis` | `user_id` | — | Liquidez del portfolio en t+0 (inmediato), t+1 (24hs) y t+2 (48hs) según plazos del mercado argentino |
+| `portfolio_diversification` | `user_id` | `portfolio_id` | Análisis de diversificación en 4 dimensiones: clase de activo, moneda, plataforma, geografía. Incluye HHI |
+| `investment_recommendations` | `user_id`, `risk_profile` | — | Recomendaciones según perfil `conservador` / `moderado` / `agresivo` con asignación objetivo y instrumentos concretos |
+
+**Flujo de cada prompt:**
+1. El LLM host llama a `prompts/get` con el nombre y los argumentos
+2. El servidor renderiza el template substituyendo los argumentos y devuelve un array `messages`
+3. El host inyecta esos mensajes en el contexto del LLM, que ejecuta los tools necesarios (`get_user_portfolio_summary`, `search_global_assets`) para resolver el análisis
+
+**Ejemplo de invocación:**
+```bash
+curl -X POST https://geqltnpxydhpwysapexz.supabase.co/functions/v1/mcp-server \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "prompts/get",
+    "params": {
+      "name": "investment_recommendations",
+      "arguments": {
+        "user_id": "<uuid>",
+        "risk_profile": "moderado"
+      }
+    }
+  }'
+```
 
 ---
 

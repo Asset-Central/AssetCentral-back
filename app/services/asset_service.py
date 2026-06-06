@@ -41,6 +41,9 @@ def _get_connector(platform: Platform, account_id: str, credentials: dict) -> Ba
         case Platform.NACION:
             from .connectors.prometeo import PrometeoConnector
             return PrometeoConnector(account_id, credentials)
+        case Platform.BINANCE:
+            from .connectors.binance import BinanceConnector
+            return BinanceConnector(account_id, credentials)
         case _:
             creds_with_hint = {**credentials, "_mock_platform": platform.value}
             return MockConnector(account_id, creds_with_hint)
@@ -177,6 +180,72 @@ class AssetService:
             bucket_map[key] = bucket_map.get(key, 0.0) + tv
 
         return [{"date": key, "total": total} for key, total in sorted(bucket_map.items())]
+
+    @staticmethod
+    async def get_performance(user_id: str, range: str = "30d") -> list[dict]:
+        """Descompone la variación de cartera en: market_pnl (precio) y capital_flow (cantidad)."""
+        accounts = (
+            supabase_admin.table("account")
+            .select("id")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        account_ids = [a["id"] for a in accounts.data]
+        if not account_ids:
+            return []
+
+        cutoff, agg = _range_cutoff_and_agg(range)
+        rows = (
+            supabase_admin.table("historical_balances")
+            .select("recorded_at, account_id, asset_id, quantity, unit_price, total_valuation")
+            .in_("account_id", account_ids)
+            .gte("recorded_at", cutoff)
+            .order("recorded_at")
+            .execute()
+        )
+
+        # For each bucket keep the LATEST record per (account_id, asset_id)
+        bucket_latest: dict[str, dict[tuple, dict]] = {}
+        for row in rows.data or []:
+            key = _agg_key(row["recorded_at"], agg)
+            pair = (row["account_id"], row["asset_id"])
+            if key not in bucket_latest:
+                bucket_latest[key] = {}
+            bucket_latest[key][pair] = {
+                "qty": float(row["quantity"]) if row.get("quantity") else 0.0,
+                "price": float(row["unit_price"]) if row.get("unit_price") else 0.0,
+                "total": float(row["total_valuation"]) if row.get("total_valuation") else 0.0,
+            }
+
+        result = []
+        prev_data: dict[tuple, dict] | None = None
+
+        for bucket_key, curr_data in sorted(bucket_latest.items()):
+            total = sum(v["total"] for v in curr_data.values())
+            market_pnl = 0.0
+            capital_flow = 0.0
+
+            if prev_data is not None:
+                for pair in set(curr_data) | set(prev_data):
+                    c = curr_data.get(pair)
+                    p = prev_data.get(pair)
+                    if c and p:
+                        market_pnl += (c["price"] - p["price"]) * p["qty"]
+                        capital_flow += (c["qty"] - p["qty"]) * c["price"]
+                    elif c:
+                        capital_flow += c["total"]
+                    elif p:
+                        capital_flow -= p["total"]
+
+            result.append({
+                "date": bucket_key,
+                "total": total,
+                "market_pnl": round(market_pnl, 2),
+                "capital_flow": round(capital_flow, 2),
+            })
+            prev_data = curr_data
+
+        return result
 
 
 async def _persist_holdings(account_id: str, holdings: list[Holding]) -> None:

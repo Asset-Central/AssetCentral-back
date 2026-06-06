@@ -119,6 +119,24 @@ interface ResourceTemplateDef {
   ) => Promise<{ contents: Array<{ uri: string; text: string }> }>;
 }
 
+interface PromptArgument {
+  name: string;
+  description: string;
+  required: boolean;
+}
+
+interface PromptMessage {
+  role: "user" | "assistant";
+  content: { type: "text"; text: string };
+}
+
+interface PromptDef {
+  name: string;
+  description: string;
+  arguments: PromptArgument[];
+  render: (args: Record<string, string>) => PromptMessage[];
+}
+
 // ==========================================
 // Pagination Helpers
 // ==========================================
@@ -479,6 +497,325 @@ const RESOURCE_TEMPLATES: ResourceTemplateDef[] = [
 ];
 
 // ==========================================
+// Prompt Template Definitions
+// ==========================================
+
+const PROMPTS: PromptDef[] = [
+  // ------------------------------------------
+  // 1. Cobertura (Hedging) de un instrumento
+  // ------------------------------------------
+  {
+    name: "hedge_instrument",
+    description:
+      "Genera un plan de cobertura (hedge) para el portfolio de un usuario frente a un instrumento específico " +
+      "(moneda, acción, bono, etc.). Analiza la exposición actual y sugiere instrumentos de cobertura disponibles " +
+      "en el mercado argentino.",
+    arguments: [
+      {
+        name: "user_id",
+        description: "UUID del usuario cuyo portfolio se va a analizar",
+        required: true,
+      },
+      {
+        name: "instrument",
+        description:
+          "Instrumento o activo a cubrir (ej: 'dólar', 'GGAL', 'BTC', 'ARS', 'YPF')",
+        required: true,
+      },
+    ],
+    render: ({ user_id, instrument }) => [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: `Necesito construir una estrategia de cobertura (hedge) para el portfolio del usuario \`${user_id}\` frente al instrumento **${instrument}**.
+
+Seguí estos pasos en orden:
+
+1. **Relevá el portfolio actual**
+   Llamá a \`get_user_portfolio_summary\` con \`user_id="${user_id}"\`.
+   Identificá todas las posiciones expuestas directa o indirectamente a **${instrument}**:
+   - Exposición directa: posiciones en el propio instrumento
+   - Exposición correlacionada: activos con alta correlación histórica (ej: acciones del mismo sector, bonos en la misma moneda)
+
+2. **Cuantificá la exposición**
+   Calculá el monto total expuesto en ARS y USD.
+   Indicá qué porcentaje del portfolio total representa.
+
+3. **Buscá instrumentos de cobertura**
+   Llamá a \`search_global_assets\` con queries relevantes para encontrar:
+   - Instrumentos inversos o de baja correlación con **${instrument}**
+   - En el mercado argentino: considera MEP/CCL para exposición al dólar, CEDEAR de sectores defensivos, bonos CER o atados al tipo de cambio, contratos de futuros en ROFEX/MatBA, FCIs con estrategia de cobertura
+   - Criterio de liquidez: preferir instrumentos con settlement T+0 o T+1 para flexibilidad
+
+4. **Elaborá el plan de cobertura**
+   Presentá el resultado con:
+   - **Exposición actual**: monto en ARS y USD, % del portfolio
+   - **Instrumentos de cobertura recomendados**: ticker, nombre, tipo, ratio de cobertura sugerido (ej: 1:1, 0.5:1)
+   - **Monto a asignar por instrumento** para lograr cobertura completa o parcial
+   - **Costo estimado de la cobertura** (spread, costo de carry si aplica)
+   - **Riesgos residuales** después de aplicar la cobertura
+   - **Horizonte temporal recomendado** para revisar la estrategia`,
+        },
+      },
+    ],
+  },
+
+  // ------------------------------------------
+  // 2. Análisis de liquidez (t+0 / t+1 / t+2)
+  // ------------------------------------------
+  {
+    name: "liquidity_analysis",
+    description:
+      "Analiza la liquidez del portfolio de un usuario según los plazos de liquidación del mercado argentino: " +
+      "disponible ahora (t+0), en 24hs (t+1) y en 48hs (t+2). Separa el capital líquido del ilíquido.",
+    arguments: [
+      {
+        name: "user_id",
+        description: "UUID del usuario cuyo portfolio se va a analizar",
+        required: true,
+      },
+    ],
+    render: ({ user_id }) => [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: `Analizá la liquidez del portfolio del usuario \`${user_id}\` en los tres horizontes temporales del mercado argentino.
+
+**Paso 1 — Obtené el portfolio completo**
+Llamá a \`get_user_portfolio_summary\` con \`user_id="${user_id}"\`.
+Si hay un campo \`nextCursor\`, paginá hasta obtener todas las posiciones.
+
+**Paso 2 — Clasificá cada instrumento por horizonte de liquidación**
+
+Usá la siguiente tabla de referencia del mercado argentino:
+
+| Horizonte | Tipo de activo | Ejemplos |
+|-----------|---------------|---------|
+| **t+0 (Inmediato)** | Saldo en efectivo ARS/USD, stablecoins (USDT/USDC), FCIs money market (rescate el mismo día), saldo Mercado Pago | ARS-CASH, USDT, USDC, Fima Premium, Premier Renta Plus |
+| **t+1 (24hs)** | Acciones BYMA en rueda de 24hs, Letras del Tesoro (LECAP), Letras en USD (LETES), algunos FCIs de renta fija | GGAL, YPF, PAMP, LECAP, LETES |
+| **t+2 (48hs)** | CEDEARs, Obligaciones Negociables corporativas, Bonos soberanos en USD (AL30, GD30, AE38), Bonos CER/Duales | AAPL, MSFT, AL30, GD30, TX28, BONCER |
+| **Ilíquido / No aplica** | Crypto en wallets no custodias, activos sin precio de mercado, posiciones bloqueadas | BTC en cold wallet, acciones no negociadas |
+
+**Paso 3 — Calculá los totales por horizonte**
+
+Para cada horizonte, calculá:
+- Valor total en ARS
+- Valor total en USD (usá el tipo de cambio implícito del portfolio si está disponible, o indicá que es aproximado)
+- % del portfolio total
+
+**Paso 4 — Presentá el cuadro de liquidez escalonada**
+
+| Horizonte | Instrumentos | Valor ARS | Valor USD | % Portfolio |
+|-----------|-------------|-----------|-----------|-------------|
+| Disponible ahora (t+0) | ... | ... | ... | ...% |
+| En 24hs (t+1) | ... | ... | ... | ...% |
+| En 48hs (t+2) | ... | ... | ... | ...% |
+| **Acumulado en 48hs** | ... | ... | ... | ...% |
+| Ilíquido / Sin precio | ... | ... | ... | ...% |
+
+Incluí también:
+- Un párrafo de **interpretación**: ¿tiene el usuario suficiente liquidez inmediata para emergencias? ¿Está sobre-concentrado en activos ilíquidos?
+- **Recomendación**: si la liquidez t+0 representa menos del 10% del portfolio, sugerí acciones concretas para mejorarla.`,
+        },
+      },
+    ],
+  },
+
+  // ------------------------------------------
+  // 3. Evaluación de diversificación
+  // ------------------------------------------
+  {
+    name: "portfolio_diversification",
+    description:
+      "Evalúa el nivel de diversificación del portfolio de un usuario en cuatro dimensiones: clase de activo, " +
+      "moneda, plataforma/broker y exposición geográfica. Calcula índice de concentración y sugiere mejoras.",
+    arguments: [
+      {
+        name: "user_id",
+        description: "UUID del usuario cuyo portfolio se va a analizar",
+        required: true,
+      },
+      {
+        name: "portfolio_id",
+        description:
+          "UUID de un portfolio específico (opcional; si se omite, analiza todas las cuentas del usuario)",
+        required: false,
+      },
+    ],
+    render: ({ user_id, portfolio_id }) => [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: `Realizá un análisis de diversificación del portfolio${portfolio_id ? ` \`${portfolio_id}\`` : " completo"} del usuario \`${user_id}\`.
+
+**Paso 1 — Obtené todas las posiciones**
+Llamá a \`get_user_portfolio_summary\` con \`user_id="${user_id}"\`${portfolio_id ? ` y filtrá las filas con \`portfolio_id="${portfolio_id}"\`` : ""}.
+Paginá si hay \`nextCursor\` hasta tener el portfolio completo.
+
+**Paso 2 — Analizá 4 dimensiones de diversificación**
+
+**Dimensión A — Clase de activo** (columna \`asset_type\`)
+Calculá el % del valor total para cada tipo:
+- \`stock\`: Acciones argentinas (BYMA)
+- \`cedear\`: Certificados de Depósito de Acciones Extranjeras
+- \`bono\`: Bonos soberanos, sub-soberanos y corporativos
+- \`fci\`: Fondos Comunes de Inversión
+- \`crypto\`: Criptomonedas
+- \`cash\`: Efectivo / saldos en cuenta
+
+**Dimensión B — Moneda** (columna \`currency\`)
+Separá en: ARS, USD y equivalentes (stablecoins en USD).
+Calculá el ratio ARS:USD del portfolio.
+
+**Dimensión C — Plataforma / Broker** (columna \`platform\`)
+Calculá la distribución entre: \`cocos\`, \`iol\`, \`mercadopago\`, \`nacion\`.
+Un portfolio con >70% en una sola plataforma tiene riesgo de concentración operacional.
+
+**Dimensión D — Geografía / Mercado**
+- Doméstico: stocks BYMA, bonos soberanos/provinciales, LECAP, FCI locales, ARS-CASH
+- Internacional: CEDEARs, bonos en USD, crypto, stablecoins
+
+**Paso 3 — Calculá el Índice de Concentración (HHI)**
+Para la dimensión de clase de activo:
+HHI = Σ (porcentaje_i)² donde porcentaje_i es la participación de cada clase como decimal.
+- HHI < 0.15: Bien diversificado
+- 0.15 ≤ HHI < 0.25: Moderadamente concentrado
+- HHI ≥ 0.25: Alta concentración — riesgo significativo
+
+**Paso 4 — Identificá los principales riesgos**
+Lista los 3 mayores riesgos de concentración con su impacto potencial.
+
+**Paso 5 — Sugerí mejoras concretas**
+Para cada clase o moneda sub-representada (< 5% del portfolio), llamá a \`search_global_assets\` para sugerir instrumentos específicos disponibles en el catálogo. Priorizá liquidez y accesibilidad desde las plataformas que el usuario ya usa.
+
+**Presentá el resultado con:**
+1. Tabla resumen por dimensión
+2. Índice HHI con su interpretación
+3. Radar de diversificación (descripción textual del perfil)
+4. Top 3 riesgos de concentración
+5. Recomendaciones de instrumentos para mejorar la diversificación`,
+        },
+      },
+    ],
+  },
+
+  // ------------------------------------------
+  // 4. Recomendaciones por perfil de riesgo
+  // ------------------------------------------
+  {
+    name: "investment_recommendations",
+    description:
+      "Genera recomendaciones de inversión personalizadas según el perfil de riesgo del usuario: " +
+      "conservador (preservación del capital), moderado (crecimiento balanceado) o agresivo (máximo crecimiento). " +
+      "Analiza el portfolio actual y propone una asignación objetivo con instrumentos concretos del mercado argentino.",
+    arguments: [
+      {
+        name: "user_id",
+        description: "UUID del usuario",
+        required: true,
+      },
+      {
+        name: "risk_profile",
+        description:
+          "Perfil de riesgo del inversor: 'conservador', 'moderado' o 'agresivo'",
+        required: true,
+      },
+    ],
+    render: ({ user_id, risk_profile }) => {
+      const profile = risk_profile?.toLowerCase() ?? "moderado";
+
+      const allocationGuide =
+        profile === "conservador"
+          ? `**Perfil CONSERVADOR — Preservación del capital**
+Objetivo: proteger el poder adquisitivo frente a la inflación ARS y la devaluación, con mínima volatilidad.
+
+| Clase de activo | Asignación objetivo | Instrumentos referencia |
+|----------------|--------------------|-----------------------|
+| Bonos CER / instrumentos indexados | 40–50% | TX28, TX26, BONCER, FCIs CER |
+| Letras / Money Market ARS | 20–25% | LECAP, FCI Liquidez (Fima, Premier) |
+| Hard dollar / USD cash | 20–25% | AL30, GD30, LETES, USD-CASH, USDC |
+| Renta variable defensiva | 5–10% | CEDEARs de utilities (KO, JNJ, VZ) |
+| Crypto / activos de riesgo | 0–5% | máximo USDT/USDC (como reserva) |`
+          : profile === "agresivo"
+          ? `**Perfil AGRESIVO — Máximo crecimiento**
+Objetivo: maximizar el retorno en USD a 3–5 años, con alta tolerancia a la volatilidad y drawdowns temporales.
+
+| Clase de activo | Asignación objetivo | Instrumentos referencia |
+|----------------|--------------------|-----------------------|
+| CEDEARs growth / tech | 30–40% | AAPL, MSFT, NVDA, AMZN, GOOGL |
+| Acciones locales beta-alto | 15–20% | GGAL, SUPV, BMA, MELI, LOMA |
+| Crypto | 15–25% | BTC, ETH, SOL |
+| Hard dollar / bonos USD | 10–15% | AL30, GD30 (corta duration) |
+| Instrumentos indexados / liquidez | 5–10% | LECAP, FCI Money Market |`
+          : `**Perfil MODERADO — Crecimiento balanceado**
+Objetivo: crecimiento real en USD a mediano plazo con volatilidad controlada.
+
+| Clase de activo | Asignación objetivo | Instrumentos referencia |
+|----------------|--------------------|-----------------------|
+| Bonos CER / indexados | 20–30% | TX28, BONCER, FCIs CER |
+| Hard dollar / bonos USD | 20–25% | AL30, GD30, LETES |
+| CEDEARs diversificados | 20–25% | AAPL, MSFT, BRK-B, VTI, QQQ |
+| Acciones locales | 10–15% | GGAL, YPF, PAMP, ALUA |
+| Crypto | 5–10% | BTC, ETH |
+| Liquidez / Money Market | 5–10% | LECAP, FCI MM |`;
+
+      return [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `Generá recomendaciones de inversión personalizadas para el usuario \`${user_id}\` con perfil de riesgo **${profile.toUpperCase()}**.
+
+${allocationGuide}
+
+---
+
+**Paso 1 — Analizá la cartera actual**
+Llamá a \`get_user_portfolio_summary\` con \`user_id="${user_id}"\`.
+Paginá si es necesario para obtener todas las posiciones.
+
+Calculá la asignación actual por clase de activo, moneda y plataforma.
+
+**Paso 2 — Identificá los GAPs respecto a la asignación objetivo**
+Comparé la asignación actual con la tabla de asignación objetivo del perfil ${profile.toUpperCase()} de arriba.
+Para cada clase de activo:
+- ¿Está sobre-asignada (>5% sobre el máximo objetivo)?
+- ¿Está sub-asignada (>5% bajo el mínimo objetivo)?
+- ¿Está dentro del rango?
+
+**Paso 3 — Buscá instrumentos concretos para cubrir los GAPs**
+Para cada clase sub-asignada, llamá a \`search_global_assets\` con queries específicas:
+- Ej para CER: "bono CER TX28", "FCI pesos CER"
+- Ej para CEDEARs: "CEDEAR tecnología AAPL", "CEDEAR MSFT"
+- Ej para crypto: "BTC bitcoin", "ETH ethereum"
+Priorizá instrumentos disponibles en las plataformas que el usuario ya tiene vinculadas.
+
+**Paso 4 — Presentá las recomendaciones**
+
+**Resumen ejecutivo:**
+- Valor total del portfolio (en ARS y USD estimado)
+- Principales fortalezas de la cartera actual
+- Principales ajustes necesarios
+
+**Tabla de recomendaciones** (ordenada por prioridad de impacto):
+
+| Prioridad | Acción | Instrumento | Monto sugerido (ARS/USD) | Razón |
+|-----------|--------|-------------|--------------------------|-------|
+| 1 | Comprar/Reducir | ... | ... | ... |
+
+**Advertencia de riesgo:**
+Incluí un párrafo recordando que estas son sugerencias basadas en el perfil declarado. El mercado argentino tiene alta volatilidad y los retornos pasados no garantizan resultados futuros. Se recomienda consultar con un asesor financiero matriculado (CNV) antes de tomar decisiones.`,
+          },
+        },
+      ];
+    },
+  },
+];
+
+// ==========================================
 // MCP Request Router
 // ==========================================
 
@@ -504,8 +841,9 @@ async function handleMcp(msg: unknown): Promise<Response> {
         capabilities: {
           tools: { listChanged: false },
           resources: { listChanged: false, subscribe: false },
+          prompts: { listChanged: false },
         },
-        serverInfo: { name: "assetcentral-mcp", version: "2.0.0" },
+        serverInfo: { name: "assetcentral-mcp", version: "2.1.0" },
       });
 
     case "ping":
@@ -609,6 +947,45 @@ async function handleMcp(msg: unknown): Promise<Response> {
       }
 
       return mcpErr(id, -32601, `Unknown resource URI: ${uri}`);
+    }
+
+    // ------------------------------------------
+    // Prompts — list all templates
+    // ------------------------------------------
+    case "prompts/list":
+      return ok(id, {
+        prompts: PROMPTS.map(({ name, description, arguments: args }) => ({
+          name,
+          description,
+          arguments: args,
+        })),
+      });
+
+    // ------------------------------------------
+    // Prompts — get a rendered template
+    // ------------------------------------------
+    case "prompts/get": {
+      const promptName = params.name as string;
+      const promptArgs = (params.arguments ?? {}) as Record<string, string>;
+      const prompt = PROMPTS.find((p) => p.name === promptName);
+      if (!prompt) {
+        return mcpErr(id, -32601, `Unknown prompt: ${promptName}`);
+      }
+      // Validate required arguments
+      const missing = prompt.arguments
+        .filter((a) => a.required && !promptArgs[a.name])
+        .map((a) => a.name);
+      if (missing.length > 0) {
+        return mcpErr(
+          id,
+          -32602,
+          `Missing required argument(s): ${missing.join(", ")}`,
+        );
+      }
+      return ok(id, {
+        description: prompt.description,
+        messages: prompt.render(promptArgs),
+      });
     }
 
     default:
