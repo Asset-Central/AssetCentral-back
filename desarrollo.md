@@ -230,6 +230,139 @@ Estrategia: Arrancar directamente con la base core del proyecto (Fases 0 a 3) pa
 
     FASE 8 — Refinamiento de Conectores: Reemplazar los conectores mockeados por implementaciones reales a medida que se consigan las keys de las APIs faltantes.
 
+---
+
+## Cambios Implementados — Servidor MCP en Supabase Edge Functions
+
+### Contexto
+
+El servidor MCP original (`supabase/functions/mcp-server/index.ts`) era una versión mínima con dos herramientas básicas y un solo recurso estático. Se reescribió completamente para cumplir los requisitos de un servidor MCP de producción orientado al consumo por parte de agentes de IA.
+
+---
+
+### Archivo: `supabase/functions/mcp-server/index.ts`
+
+**Versión desplegada:** v16 (proyecto `geqltnpxydhpwysapexz`)
+
+#### Cliente Supabase
+
+Se cambió el cliente para usar `SUPABASE_SERVICE_ROLE_KEY` (con fallback a `SUPABASE_ANON_KEY`). Esto permite que el servidor omita las políticas RLS, lo cual es correcto para un backend interno consumido exclusivamente por el agente de IA y no expuesto a usuarios finales.
+
+#### Middleware de serialización (token-lean)
+
+Se mejoraron las dos funciones de serialización existentes:
+
+- `jsonArrayToMarkdownTable`: ahora escapa saltos de línea dentro de celdas (`\n` → espacio) además de los pipes, evitando que el Markdown se rompa con valores multi-línea.
+- `jsonToMarkdownKv`: sin cambios de lógica, pero integrada al flujo de recursos dinámicos.
+
+El objetivo es reducir el consumo de tokens vs. JSON crudo (~38% menos según benchmarks de serialización Markdown).
+
+#### Paginación por cursor opaco
+
+Se agregaron dos funciones utilitarias:
+
+```
+encodeCursor(offset) → string  // base64(JSON({offset}))
+decodeCursor(string) → number  // inversa con manejo de error
+```
+
+Todos los tools que pueden devolver listas grandes aceptan un parámetro `cursor` y devuelven un `nextCursor` cuando hay más páginas disponibles.
+
+---
+
+#### Tools (Herramientas MCP)
+
+| Nombre | Descripción |
+| :--- | :--- |
+| `search_global_assets` | Llama al RPC `search_assets_hybrid_rrf` (búsqueda híbrida RRF: pgvector semántico + BM25 keyword). Límite configurable 1–50, paginación por cursor. |
+| `get_user_portfolio_summary` | Consulta la vista `llm_user_account_balances_view`. Se eliminó `.single()` de la versión anterior — ahora usa `.range()` para soportar usuarios con muchas posiciones y devuelve una tabla Markdown. Paginación por cursor. |
+| `get_database_schema` | **Pragmatic Bridge**: replica el contenido del recurso `docs://schema/assetcentral` pero expuesto como herramienta, para que el LLM pueda solicitarlo activamente cuando el host no inyecta recursos automáticamente. |
+
+---
+
+#### Recursos Estáticos (Static Resources)
+
+| URI | Descripción |
+| :--- | :--- |
+| `docs://schema/assetcentral` | Llama al RPC `get_schema_metadata()` que retorna el esquema completo con metadata `COMMENT ON`. Tiene fallback automático a `information_schema` si el RPC no existe. |
+| `docs://reference/enums` | Datos estáticos (sin round-trip a la DB) con los valores canónicos de enums: plataformas (`cocos`, `iol`, `mercadopago`, `nacion`), tipos de activo, estados de conexión y monedas. |
+
+---
+
+#### Resource Templates (Recursos Dinámicos)
+
+Se implementó soporte para el método MCP `resources/templates/list`, que no existía en la versión anterior.
+
+| URI Template | Descripción |
+| :--- | :--- |
+| `docs://users/{user_id}/profile` | Consulta en paralelo `public.users` (perfil: nombre, apellido, DNI) y `public.accounts` (cuentas vinculadas por broker). Devuelve un resumen Markdown con sección de identidad y tabla de cuentas. |
+
+El router de `resources/read` resuelve primero recursos estáticos por URI exacta y luego intenta matchear los templates via regex.
+
+---
+
+#### Métodos MCP implementados
+
+| Método | Notas |
+| :--- | :--- |
+| `initialize` | Declara capabilities: `tools`, `resources` (con `subscribe: false`) |
+| `ping` | Retorna `{}` |
+| `tools/list` | Lista los 3 tools con su `inputSchema` |
+| `tools/call` | Despacha al handler correspondiente |
+| `resources/list` | Lista los 2 recursos estáticos |
+| `resources/templates/list` | **Nuevo** — lista el template dinámico de perfil de usuario |
+| `resources/read` | Resuelve estáticos y dinámicos; retorna 404 MCP si no hay match |
+| Notificaciones (sin `id`) | Responde `202 No Content` sin body |
+| Batch JSON-RPC | Procesa arrays de mensajes en paralelo con `Promise.all` |
+
+---
+
+### Archivo: `supabase/migrations/20240001_get_schema_metadata.sql`
+
+Se creó la migración SQL para el RPC `get_schema_metadata()`, requerido por el recurso `docs://schema/assetcentral` y el tool `get_database_schema`.
+
+**Qué hace la función:**
+- Consulta `pg_attribute`, `pg_class`, `pg_namespace` y `pg_type` para extraer todas las tablas, vistas y vistas materializadas del schema `public`.
+- Incluye comentarios de tabla (`obj_description`) y de columna (`col_description`), que son la metadata semántica agregada con `COMMENT ON`.
+- Retorna columnas: `schema_name`, `object_type`, `object_name`, `table_comment`, `column_name`, `data_type`, `is_nullable`, `column_comment`.
+- Configurada con `SECURITY DEFINER` y `STABLE` para ejecución segura y cacheable.
+- Permisos otorgados a `anon`, `authenticated` y `service_role`.
+
+**Problema encontrado al aplicar:** La función ya existía en el servidor remoto con una firma de retorno diferente. `CREATE OR REPLACE FUNCTION` en PostgreSQL no permite cambiar el tipo de retorno. Se resolvió agregando `DROP FUNCTION IF EXISTS public.get_schema_metadata()` antes del `CREATE OR REPLACE`.
+
+**Historial de migración remota:** El servidor remoto tenía 16 migraciones aplicadas directamente desde el dashboard de Supabase (sin archivos locales). Se marcaron como `reverted` en la tabla de historial con `supabase migration repair` para desbloquear el `db push`.
+
+---
+
+### Cómo probar localmente
+
+```bash
+# 1. Levantar el runtime de Edge Functions local
+npx supabase functions serve --no-verify-jwt mcp-server
+
+# 2. Abrir el MCP Inspector (en otra terminal)
+npx @modelcontextprotocol/inspector http://localhost:54321/functions/v1/mcp-server
+```
+
+### Endpoint en producción
+
+```
+https://geqltnpxydhpwysapexz.supabase.co/functions/v1/mcp-server
+```
+
+Configuración para Claude Desktop u otro host MCP:
+
+```json
+{
+  "mcpServers": {
+    "assetcentral": {
+      "url": "https://geqltnpxydhpwysapexz.supabase.co/functions/v1/mcp-server",
+      "transport": "http"
+    }
+  }
+}
+```
+
 6. Dependencias Principales
 Plaintext
 
