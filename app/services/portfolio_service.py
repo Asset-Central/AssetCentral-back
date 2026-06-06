@@ -124,19 +124,19 @@ async def _set_portfolio_assets(portfolio_id: str, assets: list[PortfolioAssetIn
     tickers = [a.ticker for a in assets]
     assets_res = (
         supabase_admin.table("assets")
-        .select("id, ticker")
+        .select("id, ticker, platform")
         .in_("ticker", tickers)
         .execute()
     )
-    ticker_to_id = {r["ticker"]: r["id"] for r in assets_res.data}
+    id_map = {(r["ticker"], r["platform"]): r["id"] for r in assets_res.data}
     rows = [
         {
             "portfolio_id": portfolio_id,
-            "asset_id": ticker_to_id[a.ticker],
+            "asset_id": id_map[(a.ticker, a.platform.value)],
             "target_share": a.target_share,
         }
         for a in assets
-        if a.ticker in ticker_to_id
+        if (a.ticker, a.platform.value) in id_map
     ]
     if rows:
         supabase_admin.table("portfolio_assets").insert(rows).execute()
@@ -147,6 +147,7 @@ def _row_to_portfolio(row: dict) -> Portfolio:
     assets = [
         PortfolioAsset(
             ticker=pa["assets"]["ticker"],
+            platform=pa["assets"]["platform"],
             target_share=pa.get("target_share"),
         )
         for pa in pas
