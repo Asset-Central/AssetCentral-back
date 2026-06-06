@@ -1,0 +1,24 @@
+# Git
+.git
+.gitignore
+
+# Python caches and environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+venv/
+.venv/
+
+# Environment and settings files
+.env
+.env.example
+.mcp.json
+.agents/
+skills-lock.json
+
+# Documentation and tests
+tests/
+desarrollo.md
+README.md

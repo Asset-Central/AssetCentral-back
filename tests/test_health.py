@@ -10,4 +10,4 @@ def test_platform_configs(client):
     platforms = response.json()
     assert len(platforms) == 4
     names = {p["platform"] for p in platforms}
-    assert names == {"COCOS", "IOL", "MERCADO_PAGO", "PROMETEO"}
+    assert names == {"cocos", "iol", "mercadopago", "nacion"}
