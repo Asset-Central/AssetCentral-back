@@ -1,14 +1,6 @@
-"""
-FastAPI dependencies reutilizables.
-
-get_current_user: extrae y valida el JWT de Supabase del header Authorization.
-get_current_user_dek: además devuelve el DEK descifrado del usuario (para ops con credenciales).
-"""
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from .security import decrypt_dek
 from .supabase import supabase_admin
 
 bearer_scheme = HTTPBearer()
@@ -18,7 +10,7 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> dict:
     """
-    Valida el JWT de Supabase y devuelve el usuario.
+    Valida el JWT de Supabase y sincroniza el perfil en public.users.
     Lanza 401 si el token es inválido o expirado.
     """
     token = credentials.credentials
@@ -29,32 +21,29 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token inválido o expirado",
             )
-        return response.user
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token inválido o expirado",
         )
 
+    user = response.user
+    _sync_user_profile(user)
+    return user
 
-async def get_current_user_dek(
-    user=Depends(get_current_user),
-) -> tuple[dict, bytes]:
-    """
-    Devuelve (user, dek) para endpoints que necesitan descifrar/cifrar credenciales.
-    """
-    user_id = user.id
-    result = (
-        supabase_admin.table("user_vaults")
-        .select("dek_encrypted")
-        .eq("user_id", user_id)
-        .single()
-        .execute()
-    )
-    if not result.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vault del usuario no encontrado",
+
+def _sync_user_profile(user) -> None:
+    """Upsert del perfil en public.users para usuarios nuevos."""
+    supabase_admin.table("users").upsert(
+        {"id": user.id, "full_name": _extract_full_name(user)},
+        on_conflict="id",
+    ).execute()
+
+
+def _extract_full_name(user) -> str | None:
+    if user.user_metadata:
+        return (
+            user.user_metadata.get("full_name")
+            or user.user_metadata.get("name")
         )
-    dek = decrypt_dek(result.data["dek_encrypted"])
-    return user, dek
+    return None

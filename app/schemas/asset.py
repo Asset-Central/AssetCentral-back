@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel
@@ -6,24 +7,27 @@ from .account import Platform
 
 
 class AssetType(str, Enum):
-    CEDEAR = "CEDEAR"
-    BONO = "BONO"
-    FCI = "FCI"
+    CEDEAR = "cedear"
+    BONO = "bono"
+    FCI = "fci"
+    CASH = "cash"
+    CRYPTO = "crypto"
+    STOCK = "stock"
+
+
+class Currency(str, Enum):
+    ARS = "ARS"
     USD = "USD"
-    ACCION = "ACCION"
-    CRYPTO = "CRYPTO"
-    OTRO = "OTRO"
 
 
 class Asset(BaseModel):
-    id: str
     ticker: str
-    name: str
-    type: AssetType
-    platform: Platform
+    name: str | None = None          # assets.external_name
+    asset_type: AssetType | None = None
+    platform: Platform | None = None
+    currency: Currency | None = None
+    account_id: str
     quantity: float
-    price_ars: float
-    price_usd: float | None = None
-    total_ars: float
-    total_usd: float | None = None
-    daily_change_percent: float
+    unit_price: float | None = None
+    total_valuation: float | None = None
+    recorded_at: datetime | None = None

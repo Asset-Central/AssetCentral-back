@@ -1,10 +1,21 @@
-"""
-Interfaz abstracta que todo conector de broker debe implementar.
-"""
-
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
-from app.schemas.asset import Asset
+from app.schemas.asset import AssetType, Currency
+from app.schemas.account import Platform
+
+
+@dataclass
+class Holding:
+    """Posición de un activo en la cuenta de un broker."""
+    ticker: str
+    external_name: str
+    asset_type: AssetType
+    currency: Currency
+    platform: Platform
+    quantity: float
+    unit_price: float | None
+    total_valuation: float
 
 
 class BaseConnector(ABC):
@@ -14,10 +25,9 @@ class BaseConnector(ABC):
         self.credentials = credentials
 
     @abstractmethod
-    async def get_assets(self) -> list[Asset]:
+    async def get_holdings(self) -> list[Holding]:
         """
-        Obtiene los activos de la cuenta del broker.
-        Debe retornar una lista de Asset con todos los campos calculados.
+        Obtiene las posiciones actuales de la cuenta del broker.
         Lanza ConnectorError si hay un problema de autenticación o API.
         """
         ...

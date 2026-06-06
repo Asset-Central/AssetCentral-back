@@ -1,16 +1,17 @@
+import json
+
 from fastapi import HTTPException, status
 
-from app.core.security import encrypt_credentials
 from app.core.supabase import supabase_admin
 from app.schemas.account import (
-    AccountStatus,
+    Account,
+    ConnectionStatus,
     CredentialField,
-    LinkedAccount,
+    LinkAccountRequest,
     Platform,
     PlatformConfig,
 )
 
-# Configuración estática de cada plataforma (campos de credenciales requeridos)
 PLATFORM_CONFIGS: list[PlatformConfig] = [
     PlatformConfig(
         platform=Platform.COCOS,
@@ -31,7 +32,7 @@ PLATFORM_CONFIGS: list[PlatformConfig] = [
         ],
     ),
     PlatformConfig(
-        platform=Platform.MERCADO_PAGO,
+        platform=Platform.MERCADOPAGO,
         display_name="Mercado Pago",
         logo_url="/logos/mercadopago.png",
         fields=[
@@ -40,14 +41,11 @@ PLATFORM_CONFIGS: list[PlatformConfig] = [
         ],
     ),
     PlatformConfig(
-        platform=Platform.PROMETEO,
-        display_name="Prometeo",
-        logo_url="/logos/prometeo.png",
+        platform=Platform.NACION,
+        display_name="Banco Nación",
+        logo_url="/logos/nacion.png",
         fields=[
-            CredentialField(name="api_key", label="API Key", type="password"),
-            CredentialField(name="provider", label="Proveedor", type="text",
-                            placeholder="ej: itau_uy"),
-            CredentialField(name="username", label="Usuario", type="text"),
+            CredentialField(name="cuit", label="CUIT", type="text", placeholder="20-12345678-9"),
             CredentialField(name="password", label="Contraseña", type="password"),
         ],
     ),
@@ -61,10 +59,10 @@ class AccountService:
         return PLATFORM_CONFIGS
 
     @staticmethod
-    async def list_accounts(user_id: str) -> list[LinkedAccount]:
+    async def list_accounts(user_id: str) -> list[Account]:
         result = (
-            supabase_admin.table("linked_accounts")
-            .select("id, platform, label, status, last_sync_at, error_message")
+            supabase_admin.table("account")
+            .select("id, platform, label, connection_status, last_sync, error_message")
             .eq("user_id", user_id)
             .order("created_at")
             .execute()
@@ -72,23 +70,25 @@ class AccountService:
         return [_row_to_account(row) for row in result.data]
 
     @staticmethod
-    async def link_account(
-        user_id: str,
-        dek: bytes,
-        platform: Platform,
-        credentials: dict[str, str],
-    ) -> LinkedAccount:
-        credentials_enc = encrypt_credentials(dek, credentials)
-        label = _default_label(platform, credentials)
+    async def link_account(user_id: str, data: LinkAccountRequest) -> Account:
+        label = _build_label(data.platform, data.credentials)
+        secret_name = f"account_creds_{user_id}_{data.platform.value}"
+
+        # Guardar credenciales en Supabase Vault
+        vault_result = supabase_admin.rpc(
+            "upsert_vault_secret",
+            {"p_secret": json.dumps(data.credentials), "p_name": secret_name},
+        ).execute()
+        secret_id = vault_result.data
 
         result = (
-            supabase_admin.table("linked_accounts")
+            supabase_admin.table("account")
             .insert({
                 "user_id": user_id,
-                "platform": platform.value,
+                "platform": data.platform.value,
                 "label": label,
-                "status": AccountStatus.PENDING.value,
-                "credentials_enc": credentials_enc,
+                "connection_status": ConnectionStatus.ACTIVE.value,
+                "secret_id": str(secret_id),
             })
             .execute()
         )
@@ -96,42 +96,65 @@ class AccountService:
 
     @staticmethod
     async def unlink_account(user_id: str, account_id: str) -> None:
-        result = (
-            supabase_admin.table("linked_accounts")
-            .delete()
+        # Obtener secret_id antes de borrar
+        row = (
+            supabase_admin.table("account")
+            .select("secret_id")
             .eq("id", account_id)
-            .eq("user_id", user_id)  # garantiza que el usuario es el dueño
+            .eq("user_id", user_id)
+            .single()
             .execute()
         )
-        if not result.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Cuenta no encontrada",
-            )
+        if not row.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cuenta no encontrada")
+
+        secret_id = row.data.get("secret_id")
+
+        supabase_admin.table("account").delete().eq("id", account_id).eq("user_id", user_id).execute()
+
+        if secret_id:
+            supabase_admin.rpc("delete_vault_secret", {"p_secret_id": str(secret_id)}).execute()
+
+    @staticmethod
+    async def get_credentials(account_id: str) -> dict:
+        row = (
+            supabase_admin.table("account")
+            .select("secret_id")
+            .eq("id", account_id)
+            .single()
+            .execute()
+        )
+        if not row.data or not row.data.get("secret_id"):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credenciales no encontradas")
+
+        secret_result = supabase_admin.rpc(
+            "read_vault_secret",
+            {"p_secret_id": str(row.data["secret_id"])},
+        ).execute()
+
+        return json.loads(secret_result.data)
 
 
-def _row_to_account(row: dict) -> LinkedAccount:
-    return LinkedAccount(
+def _row_to_account(row: dict) -> Account:
+    return Account(
         id=row["id"],
         platform=Platform(row["platform"]),
-        label=row["label"],
-        status=AccountStatus(row["status"]),
-        last_sync_at=row.get("last_sync_at"),
+        label=row.get("label"),
+        connection_status=ConnectionStatus(row["connection_status"]),
+        last_sync=row.get("last_sync"),
         error_message=row.get("error_message"),
     )
 
 
-def _default_label(platform: Platform, credentials: dict) -> str:
-    """Genera un label legible para la cuenta basado en las credenciales."""
+def _build_label(platform: Platform, credentials: dict) -> str:
     match platform:
         case Platform.COCOS | Platform.IOL:
             return credentials.get("email") or credentials.get("username") or platform.value
-        case Platform.MERCADO_PAGO:
+        case Platform.MERCADOPAGO:
             token = credentials.get("access_token", "")
             return f"MP ...{token[-6:]}" if len(token) > 6 else "Mercado Pago"
-        case Platform.PROMETEO:
-            provider = credentials.get("provider", "")
-            user = credentials.get("username", "")
-            return f"Prometeo / {provider} / {user}".strip(" /")
+        case Platform.NACION:
+            cuit = credentials.get("cuit", "")
+            return f"Nación {cuit}" if cuit else "Banco Nación"
         case _:
             return platform.value

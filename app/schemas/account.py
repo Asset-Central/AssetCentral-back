@@ -6,17 +6,16 @@ from pydantic import BaseModel
 
 
 class Platform(str, Enum):
-    COCOS = "COCOS"
-    IOL = "IOL"
-    MERCADO_PAGO = "MERCADO_PAGO"
-    PROMETEO = "PROMETEO"
+    COCOS = "cocos"
+    IOL = "iol"
+    MERCADOPAGO = "mercadopago"
+    NACION = "nacion"
 
 
-class AccountStatus(str, Enum):
-    CONNECTED = "CONNECTED"
-    ERROR = "ERROR"
-    PENDING = "PENDING"
-    DISCONNECTED = "DISCONNECTED"
+class ConnectionStatus(str, Enum):
+    ACTIVE = "active"
+    REQUIRES_REAUTHENTICATION = "requires_reauthentication"
+    ERROR = "error"
 
 
 class CredentialField(BaseModel):
@@ -33,12 +32,12 @@ class PlatformConfig(BaseModel):
     fields: list[CredentialField]
 
 
-class LinkedAccount(BaseModel):
+class Account(BaseModel):
     id: str
     platform: Platform
-    label: str
-    status: AccountStatus
-    last_sync_at: datetime | None
+    label: str | None = None
+    connection_status: ConnectionStatus
+    last_sync: datetime | None
     error_message: str | None = None
 
 
