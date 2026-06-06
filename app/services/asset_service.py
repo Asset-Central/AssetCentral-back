@@ -9,6 +9,33 @@ from .connectors.base import BaseConnector, ConnectorError, Holding
 from .connectors.mock import MockConnector
 
 
+def _range_cutoff_and_agg(range_str: str) -> tuple[str, str]:
+    """Returns (cutoff_iso, agg_granularity) where granularity is 'minute'|'hour'|'day'."""
+    now = datetime.now(timezone.utc)
+    match range_str:
+        case "1h":
+            return (now - timedelta(hours=1)).isoformat(), "minute"
+        case "1d":
+            return (now - timedelta(days=1)).isoformat(), "hour"
+        case "1w":
+            return (now - timedelta(weeks=1)).isoformat(), "day"
+        case "1y":
+            return (now - timedelta(days=365)).isoformat(), "day"
+        case _:  # "30d" default
+            return (now - timedelta(days=30)).isoformat(), "day"
+
+
+def _agg_key(recorded_at: str, granularity: str) -> str:
+    """Truncate timestamp to the given granularity for bucketing."""
+    match granularity:
+        case "minute":
+            return recorded_at[:16]   # "YYYY-MM-DDTHH:MM"
+        case "hour":
+            return recorded_at[:13]   # "YYYY-MM-DDTHH"
+        case _:
+            return recorded_at[:10]   # "YYYY-MM-DD"
+
+
 def _get_connector(platform: Platform, account_id: str, credentials: dict) -> BaseConnector:
     match platform:
         case Platform.NACION:
@@ -73,15 +100,13 @@ class AssetService:
         return [_row_to_asset(row, prev_price_map) for row in latest_rows]
 
     @staticmethod
-    async def get_asset_history(user_id: str, ticker: str) -> list[dict]:
-        """Últimos 30 días de precio para un ticker del usuario."""
-        # Obtener asset_id desde el ticker
+    async def get_asset_history(user_id: str, ticker: str, range: str = "30d") -> list[dict]:
+        """Historial de precio para un ticker del usuario en el rango indicado."""
         asset_res = supabase_admin.table("assets").select("id").eq("ticker", ticker).limit(1).execute()
         if not asset_res.data:
             return []
         asset_id = asset_res.data[0]["id"]
 
-        # Obtener cuentas del usuario
         accounts = (
             supabase_admin.table("account")
             .select("id")
@@ -92,38 +117,39 @@ class AssetService:
         if not account_ids:
             return []
 
+        cutoff, agg = _range_cutoff_and_agg(range)
         rows = (
             supabase_admin.table("historical_balances")
             .select("recorded_at, unit_price, total_valuation")
             .eq("asset_id", asset_id)
             .in_("account_id", account_ids)
+            .gte("recorded_at", cutoff)
             .order("recorded_at")
             .execute()
         )
 
-        # Agregar por día (promedio de unit_price, suma de total_valuation)
-        day_map: dict[str, dict] = {}
+        bucket_map: dict[str, dict] = {}
         for row in rows.data or []:
-            day = row["recorded_at"][:10]
-            if day not in day_map:
-                day_map[day] = {"prices": [], "total": 0.0}
+            key = _agg_key(row["recorded_at"], agg)
+            if key not in bucket_map:
+                bucket_map[key] = {"prices": [], "total": 0.0}
             if row.get("unit_price"):
-                day_map[day]["prices"].append(float(row["unit_price"]))
+                bucket_map[key]["prices"].append(float(row["unit_price"]))
             if row.get("total_valuation"):
-                day_map[day]["total"] += float(row["total_valuation"])
+                bucket_map[key]["total"] += float(row["total_valuation"])
 
         return [
             {
-                "date": day,
+                "date": key,
                 "unit_price": sum(v["prices"]) / len(v["prices"]) if v["prices"] else 0,
                 "total_valuation": v["total"],
             }
-            for day, v in sorted(day_map.items())
+            for key, v in sorted(bucket_map.items())
         ]
 
     @staticmethod
-    async def get_value_history(user_id: str) -> list[dict]:
-        """Valuación total del portafolio por día (últimos 30 días)."""
+    async def get_value_history(user_id: str, range: str = "30d") -> list[dict]:
+        """Valuación total del portafolio por el rango indicado."""
         accounts = (
             supabase_admin.table("account")
             .select("id")
@@ -134,22 +160,23 @@ class AssetService:
         if not account_ids:
             return []
 
+        cutoff, agg = _range_cutoff_and_agg(range)
         rows = (
             supabase_admin.table("historical_balances")
             .select("recorded_at, total_valuation, assets(currency)")
             .in_("account_id", account_ids)
+            .gte("recorded_at", cutoff)
             .order("recorded_at")
             .execute()
         )
 
-        # Agregar por día: suma de total_valuation (en ARS)
-        day_map: dict[str, float] = {}
+        bucket_map: dict[str, float] = {}
         for row in rows.data or []:
-            day = row["recorded_at"][:10]
+            key = _agg_key(row["recorded_at"], agg)
             tv = float(row["total_valuation"]) if row.get("total_valuation") else 0.0
-            day_map[day] = day_map.get(day, 0.0) + tv
+            bucket_map[key] = bucket_map.get(key, 0.0) + tv
 
-        return [{"date": day, "total": total} for day, total in sorted(day_map.items())]
+        return [{"date": key, "total": total} for key, total in sorted(bucket_map.items())]
 
 
 async def _persist_holdings(account_id: str, holdings: list[Holding]) -> None:
