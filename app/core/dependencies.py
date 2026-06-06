@@ -1,9 +1,15 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from .config import settings
 from .supabase import supabase_admin
 
 bearer_scheme = HTTPBearer()
+
+_DEV_USER = type("User", (), {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "user_metadata": {"full_name": "Dev User"},
+})()
 
 
 async def get_current_user(
@@ -14,6 +20,12 @@ async def get_current_user(
     Lanza 401 si el token es inválido o expirado.
     """
     token = credentials.credentials
+
+    # Bypass de auth solo en desarrollo local
+    if settings.is_dev and token == "dev":
+        _sync_user_profile(_DEV_USER)
+        return _DEV_USER
+
     try:
         response = supabase_admin.auth.get_user(token)
         if response.user is None:

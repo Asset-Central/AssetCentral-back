@@ -11,6 +11,9 @@ from .connectors.mock import MockConnector
 
 def _get_connector(platform: Platform, account_id: str, credentials: dict) -> BaseConnector:
     match platform:
+        case Platform.NACION:
+            from .connectors.prometeo import PrometeoConnector
+            return PrometeoConnector(account_id, credentials)
         # case Platform.IOL:
         #     from .connectors.iol import IOLConnector
         #     return IOLConnector(account_id, credentials)
@@ -20,9 +23,6 @@ def _get_connector(platform: Platform, account_id: str, credentials: dict) -> Ba
         # case Platform.MERCADOPAGO:
         #     from .connectors.mercadopago import MercadoPagoConnector
         #     return MercadoPagoConnector(account_id, credentials)
-        # case Platform.NACION:
-        #     from .connectors.nacion import NacionConnector
-        #     return NacionConnector(account_id, credentials)
         case _:
             creds_with_hint = {**credentials, "_mock_platform": platform.value}
             return MockConnector(account_id, creds_with_hint)
@@ -69,8 +69,6 @@ async def _persist_holdings(account_id: str, holdings: list[Holding]) -> None:
     if not holdings:
         return
 
-    now = datetime.now(timezone.utc).isoformat()
-
     # Upsert en catálogo global de assets; recuperar IDs para historical_balances
     asset_rows = [
         {
@@ -97,12 +95,12 @@ async def _persist_holdings(account_id: str, holdings: list[Holding]) -> None:
             "asset_id": id_map[(h.ticker, h.platform.value)],
             "quantity": h.quantity,
             "unit_price": h.unit_price,
-            "total_valuation": h.total_valuation,
-            "recorded_at": now,
         }
         for h in holdings
+        if (h.ticker, h.platform.value) in id_map
     ]
-    supabase_admin.table("historical_balances").insert(balance_rows).execute()
+    if balance_rows:
+        supabase_admin.table("historical_balances").insert(balance_rows).execute()
 
 
 async def _set_account_status(

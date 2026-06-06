@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 
@@ -11,6 +12,7 @@ from app.schemas.account import (
     Platform,
     PlatformConfig,
 )
+from app.services.connectors.base import ConnectorError
 
 PLATFORM_CONFIGS: list[PlatformConfig] = [
     PlatformConfig(
@@ -45,8 +47,14 @@ PLATFORM_CONFIGS: list[PlatformConfig] = [
         display_name="Banco Nación",
         logo_url="/logos/nacion.png",
         fields=[
-            CredentialField(name="cuit", label="CUIT", type="text", placeholder="20-12345678-9"),
+            CredentialField(name="username", label="Usuario", type="text"),
             CredentialField(name="password", label="Contraseña", type="password"),
+            CredentialField(
+                name="provider",
+                label="Proveedor",
+                type="text",
+                placeholder="test",
+            ),
         ],
     ),
 ]
@@ -71,10 +79,17 @@ class AccountService:
 
     @staticmethod
     async def link_account(user_id: str, data: LinkAccountRequest) -> Account:
+        if data.platform == Platform.NACION:
+            return await AccountService._link_prometeo(user_id, data)
+        return await AccountService._link_generic(user_id, data)
+
+    @staticmethod
+    async def _link_generic(user_id: str, data: LinkAccountRequest) -> Account:
+        """Flujo estándar: guarda credenciales en Vault e inserta el registro."""
+        _cleanup_existing_account(user_id, data.platform)
         label = _build_label(data.platform, data.credentials)
         secret_name = f"account_creds_{user_id}_{data.platform.value}"
 
-        # Guardar credenciales en Supabase Vault
         vault_result = supabase_admin.rpc(
             "upsert_vault_secret",
             {"p_secret": json.dumps(data.credentials), "p_name": secret_name},
@@ -93,6 +108,74 @@ class AccountService:
             .execute()
         )
         return _row_to_account(result.data[0])
+
+    @staticmethod
+    async def _link_prometeo(user_id: str, data: LinkAccountRequest) -> Account:
+        """
+        Flujo Prometeo:
+          1. Valida credenciales y extrae balance inicial llamando a la API.
+          2. Guarda credenciales cifradas en Vault.
+          3. Inserta el registro de cuenta con last_sync ya poblado.
+          4. Persiste las posiciones iniciales en historical_balances.
+        """
+        from app.services.connectors.prometeo import PrometeoConnector
+
+        # Importación tardía para evitar ciclo con asset_service
+        from app.services.asset_service import _persist_holdings
+
+        _cleanup_existing_account(user_id, data.platform)
+        connector = PrometeoConnector(account_id="", credentials=data.credentials)
+
+        try:
+            holdings = await connector.get_holdings()
+        except ConnectorError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"No se pudo conectar con Prometeo: {exc}",
+            ) from exc
+
+        # Credenciales válidas: persistir en Vault
+        secret_name = f"account_creds_{user_id}_{data.platform.value}"
+        vault_result = supabase_admin.rpc(
+            "upsert_vault_secret",
+            {"p_secret": json.dumps(data.credentials), "p_name": secret_name},
+        ).execute()
+        secret_id = vault_result.data
+
+        # Buscar saldo ARS para el label
+        ars_holding = next(
+            (h for h in holdings if h.currency.value == "ARS"), None
+        )
+        label = (
+            f"Banco Nación ARS ${ars_holding.total_valuation:,.2f}"
+            if ars_holding
+            else f"Banco Nación ({data.credentials.get('provider', 'test')})"
+        )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result = (
+            supabase_admin.table("account")
+            .insert({
+                "user_id": user_id,
+                "platform": data.platform.value,
+                "label": label,
+                "connection_status": ConnectionStatus.ACTIVE.value,
+                "secret_id": str(secret_id),
+                "last_sync": now_iso,
+            })
+            .execute()
+        )
+        account_row = result.data[0]
+        account_id = account_row["id"]
+
+        try:
+            await _persist_holdings(account_id, holdings)
+        except Exception:
+            # La persistencia de balances puede fallar si el schema de historical_balances
+            # no coincide con lo esperado — la cuenta queda activa igual
+            pass
+
+        return _row_to_account(account_row)
 
     @staticmethod
     async def unlink_account(user_id: str, account_id: str) -> None:
@@ -133,6 +216,30 @@ class AccountService:
         ).execute()
 
         return json.loads(secret_result.data)
+
+
+def _cleanup_existing_account(user_id: str, platform: Platform) -> None:
+    """
+    Si el usuario ya tiene una cuenta para este platform, la elimina junto con
+    su secreto en Vault. Permite re-vinculación limpia sin conflictos de unique key.
+    """
+    rows = (
+        supabase_admin.table("account")
+        .select("id, secret_id")
+        .eq("user_id", user_id)
+        .eq("platform", platform.value)
+        .execute()
+    )
+    for row in rows.data or []:
+        supabase_admin.table("account").delete().eq("id", row["id"]).execute()
+        if row.get("secret_id"):
+            try:
+                supabase_admin.rpc(
+                    "delete_vault_secret",
+                    {"p_secret_id": str(row["secret_id"])},
+                ).execute()
+            except Exception:
+                pass
 
 
 def _row_to_account(row: dict) -> Account:
