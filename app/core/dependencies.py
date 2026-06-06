@@ -34,10 +34,13 @@ async def get_current_user(
 
 def _sync_user_profile(user) -> None:
     """Upsert del perfil en public.users para usuarios nuevos."""
-    supabase_admin.table("users").upsert(
-        {"id": user.id, "full_name": _extract_full_name(user)},
-        on_conflict="id",
-    ).execute()
+    meta = user.user_metadata or {}
+    data: dict = {"id": user.id, "full_name": _extract_full_name(user)}
+    # Solo sobreescribir si el valor existe en metadata (no pisar datos ya guardados con null)
+    for field in ("nombre", "apellido", "dni"):
+        if meta.get(field):
+            data[field] = meta[field]
+    supabase_admin.table("users").upsert(data, on_conflict="id").execute()
 
 
 def _extract_full_name(user) -> str | None:
