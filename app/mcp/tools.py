@@ -72,6 +72,26 @@ async def get_assets(user_id: str, asset_type: str | None = None) -> list[dict]:
     ]
 
 
+async def get_user_financial_profile(user_id: str) -> dict:
+    """
+    Perfil financiero personal del usuario (opcional, auto-declarado).
+    Incluye: edad, ingresos mensuales, capacidad de ahorro, aversión al riesgo,
+    horizonte de inversión, objetivos y preferencia de moneda.
+    Usar este contexto para personalizar recomendaciones de inversión.
+    """
+    result = (
+        supabase_admin.table("users")
+        .select("financial_profile")
+        .eq("id", user_id)
+        .single()
+        .execute()
+    )
+    profile = (result.data or {}).get("financial_profile") or {}
+    if not profile:
+        return {"message": "El usuario no ha completado su perfil financiero."}
+    return profile
+
+
 async def get_portfolios(user_id: str) -> list[dict]:
     """Lista los portfolios del usuario con su valuación total."""
     portfolios = (
