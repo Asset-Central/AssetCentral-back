@@ -369,6 +369,77 @@ const TOOLS: ToolDef[] = [
       return { content: [{ type: "text", text }] };
     },
   },
+
+  // ------------------------------------------
+  // 4. User Financial Profile
+  // Reads the self-declared financial profile
+  // stored in users.financial_profile (JSONB).
+  // Fields: age, monthly_income_ars,
+  // savings_capacity_ars, risk_aversion,
+  // investment_horizon_months, goals,
+  // currency_preference.
+  // ------------------------------------------
+  {
+    name: "get_user_financial_profile",
+    description:
+      "Returns the self-declared financial profile for a user (age, monthly income, savings capacity, risk aversion, " +
+      "investment horizon, financial goals, currency preference). " +
+      "Use this context to personalise investment recommendations. " +
+      "Returns a message if the user has not yet filled in their profile.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: {
+          type: "string",
+          format: "uuid",
+          description: "UUID of the target user",
+        },
+      },
+      required: ["user_id"],
+    },
+    handler: async ({ user_id }) => {
+      const { data, error } = await supabase
+        .from("users")
+        .select("financial_profile")
+        .eq("id", user_id)
+        .maybeSingle();
+
+      if (error) {
+        return {
+          content: [{ type: "text", text: `**Error:** ${error.message}` }],
+          isError: true,
+        };
+      }
+      if (!data) {
+        return {
+          content: [
+            { type: "text", text: `_User \`${user_id}\` not found._` },
+          ],
+        };
+      }
+
+      const profile = data.financial_profile as Record<string, unknown> | null;
+      if (!profile || Object.keys(profile).length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `_User \`${user_id}\` has not completed their financial profile yet._`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `## Financial Profile — User \`${user_id}\`\n\n${jsonToMarkdownKv(profile)}`,
+          },
+        ],
+      };
+    },
+  },
 ];
 
 // ==========================================
