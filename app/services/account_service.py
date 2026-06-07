@@ -209,32 +209,38 @@ class AccountService:
                 detail=f"No se pudo conectar con Binance: {exc}",
             ) from exc
 
-        secret_name = f"account_creds_{user_id}_{data.platform.value}"
-        vault_result = supabase_admin.rpc(
-            "upsert_vault_secret",
-            {"p_secret": json.dumps(data.credentials), "p_name": secret_name},
-        ).execute()
-        secret_id = vault_result.data
+        try:
+            secret_name = f"account_creds_{user_id}_{data.platform.value}"
+            vault_result = supabase_admin.rpc(
+                "upsert_vault_secret",
+                {"p_secret": json.dumps(data.credentials), "p_name": secret_name},
+            ).execute()
+            secret_id = vault_result.data
 
-        total_usd = sum(h.total_valuation for h in holdings)
-        label = f"Binance — U$ {total_usd:,.2f}" if holdings else "Binance"
+            total_usd = sum(h.total_valuation for h in holdings)
+            label = f"Binance — U$ {total_usd:,.2f}" if holdings else "Binance"
 
-        now_iso = datetime.now(timezone.utc).isoformat()
-        result = (
-            supabase_admin.table("account")
-            .insert({
-                "user_id": user_id,
-                "platform": data.platform.value,
-                "nombre": data.nombre or _get_display_name(data.platform),
-                "label": label,
-                "connection_status": ConnectionStatus.ACTIVE.value,
-                "secret_id": str(secret_id),
-                "last_sync": now_iso,
-            })
-            .execute()
-        )
-        account_row = result.data[0]
-        account_id = account_row["id"]
+            now_iso = datetime.now(timezone.utc).isoformat()
+            result = (
+                supabase_admin.table("account")
+                .insert({
+                    "user_id": user_id,
+                    "platform": data.platform.value,
+                    "nombre": data.nombre or _get_display_name(data.platform),
+                    "label": label,
+                    "connection_status": ConnectionStatus.ACTIVE.value,
+                    "secret_id": str(secret_id),
+                    "last_sync": now_iso,
+                })
+                .execute()
+            )
+            account_row = result.data[0]
+            account_id = account_row["id"]
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error guardando la cuenta Binance: {exc}",
+            ) from exc
 
         try:
             await _persist_holdings(account_id, holdings)

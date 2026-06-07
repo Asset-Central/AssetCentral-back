@@ -46,9 +46,10 @@ mount_mcp(app)
 # 500 reciban los headers Access-Control-Allow-Origin correctamente.
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    detail = str(exc) if settings.is_dev else "Internal server error"
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error"},
+        content={"detail": detail},
     )
 
 
