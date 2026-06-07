@@ -29,8 +29,9 @@ _ASSET_TYPE_MAP = {
     "fondos_comunes_de_inversion": AssetType.FCI,
     "fci": AssetType.FCI,
     "opciones": AssetType.STOCK,
-    # Cauciones: aparecen en estadocuenta, no en portafolio
     "cauciones": AssetType.CAUCION,
+    "caucionespesos": AssetType.CAUCION,
+    "caucionesdolares": AssetType.CAUCION,
 }
 
 
@@ -118,8 +119,13 @@ class IolConnector(BaseConnector):
             ultimo_precio = float(activo.get("ultimoPrecio") or 0)
             valorizado = float(activo.get("valorizado") or cantidad * ultimo_precio)
 
-            if cantidad <= 0:
+            # Algunos instrumentos (ej. cauciones) tienen cantidad=0 pero valorizado>0
+            if cantidad <= 0 and valorizado <= 0:
                 continue
+
+            # Para instrumentos sin cantidad (ej. cauciones), usar valorizado como cantidad
+            effective_qty = cantidad if cantidad > 0 else valorizado
+            effective_price = ultimo_precio if cantidad > 0 and ultimo_precio else (1.0 if cantidad <= 0 else None)
 
             holdings.append(
                 Holding(
@@ -128,8 +134,8 @@ class IolConnector(BaseConnector):
                     asset_type=asset_type,
                     currency=currency,
                     platform=Platform.IOL,
-                    quantity=cantidad,
-                    unit_price=ultimo_precio if ultimo_precio else None,
+                    quantity=effective_qty,
+                    unit_price=effective_price,
                     total_valuation=valorizado,
                 )
             )
@@ -150,7 +156,6 @@ class IolConnector(BaseConnector):
             return []
 
         data = resp.json()
-        import json; print("IOL estadocuenta raw:", json.dumps(data, indent=2, default=str))
         cuentas = data.get("cuentas") or []
 
         holdings: list[Holding] = []
@@ -179,20 +184,5 @@ class IolConnector(BaseConnector):
                     )
                 )
 
-            # ── Cauciones colocadas (dinero prestado, genera interés) ──
-            caucion = float(cuenta.get("caucionColocada") or 0)
-            if caucion > 0:
-                holdings.append(
-                    Holding(
-                        ticker=f"IOL_CAUCION_{currency.value}",
-                        external_name=f"Caución colocada IOL ({currency.value})",
-                        asset_type=AssetType.CAUCION,
-                        currency=currency,
-                        platform=Platform.IOL,
-                        quantity=caucion,
-                        unit_price=1.0,
-                        total_valuation=caucion,
-                    )
-                )
 
         return holdings
