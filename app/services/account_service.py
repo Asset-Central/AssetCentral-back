@@ -49,12 +49,6 @@ PLATFORM_CONFIGS: list[PlatformConfig] = [
         fields=[
             CredentialField(name="username", label="Usuario", type="text"),
             CredentialField(name="password", label="Contraseña", type="password"),
-            CredentialField(
-                name="provider",
-                label="Proveedor",
-                type="text",
-                placeholder="test",
-            ),
         ],
     ),
     PlatformConfig(
