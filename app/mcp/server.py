@@ -6,6 +6,7 @@ en tools MCP, incluyendo sus schemas de request/response.
 El header Authorization se propaga a cada tool call.
 """
 
+import httpx
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi_mcp import FastApiMCP
 from fastapi_mcp.auth.proxy import setup_oauth_fake_dynamic_register_endpoint
@@ -30,14 +31,39 @@ OAUTH_METADATA = {
 
 
 async def _require_bearer(request: Request):
-    """Verifica que haya un Bearer token. Retorna 401 para disparar el flujo OAuth.
-    La validación real del token ocurre en cada endpoint de la API."""
+    """Valida el Bearer token async. Retorna 401 (sin bloquear el event loop)
+    para disparar el flujo OAuth cuando el token es inválido o está ausente."""
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
         raise HTTPException(
             status_code=401,
             detail="Authentication required",
             headers={"WWW-Authenticate": 'Bearer realm="AssetCentral"'},
+        )
+    from app.core.config import settings
+    token = auth[7:]
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{settings.supabase_url}/auth/v1/user",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": settings.supabase_anon_key,
+                },
+            )
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=401,
+                detail="Token inválido o expirado",
+                headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Token inválido o expirado",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         )
 
 
