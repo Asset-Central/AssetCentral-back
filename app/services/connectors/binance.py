@@ -19,8 +19,8 @@ BINANCE_BASE = "https://api.binance.com"
 # Stablecoins que cotizan 1:1 con USD
 _STABLE_USD = {"USDT", "BUSD", "USDC", "TUSD", "FDUSD", "DAI", "USDP"}
 
-# Ignorar posiciones con valor < 1 USD (dust)
-_MIN_USD = 1.0
+# Ignorar posiciones con valor < 0.001 USD (dust absoluto)
+_MIN_USD = 0.001
 
 
 def _sign(secret: str, query: str) -> str:
@@ -65,13 +65,12 @@ class BinanceConnector(BaseConnector):
                             price_map.get(f"{asset}USDT")
                             or price_map.get(f"{asset}BUSD")
                             or price_map.get(f"{asset}USDC")
+                            or 0.0  # sin par USD (token delistado, etc.)
                         )
-                        if unit_price is None:
-                            continue  # par sin precio USD conocido
 
                     total = qty * unit_price
-                    if total < _MIN_USD:
-                        continue  # dust
+                    if total < _MIN_USD and unit_price > 0:
+                        continue  # dust con precio conocido
 
                     holdings.append(Holding(
                         ticker=f"BIN-{asset}",
