@@ -30,7 +30,8 @@ OAUTH_METADATA = {
 
 
 async def _require_bearer(request: Request):
-    """Valida el Bearer token en el endpoint /mcp. Retorna 401 para disparar el flujo OAuth."""
+    """Verifica que haya un Bearer token. Retorna 401 para disparar el flujo OAuth.
+    La validación real del token ocurre en cada endpoint de la API."""
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
         raise HTTPException(
@@ -38,25 +39,6 @@ async def _require_bearer(request: Request):
             detail="Authentication required",
             headers={"WWW-Authenticate": 'Bearer realm="AssetCentral"'},
         )
-    from app.core.supabase import supabase_admin
-    token = auth[7:]
-    try:
-        resp = supabase_admin.auth.get_user(token)
-        if resp.user is None:
-            raise HTTPException(
-                status_code=401,
-                detail="Token inválido o expirado",
-                headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
-            )
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(
-            status_code=401,
-            detail="Token inválido o expirado",
-            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
-        )
-    return resp.user
 
 
 def mount_mcp(app: FastAPI) -> None:
