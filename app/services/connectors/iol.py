@@ -30,7 +30,7 @@ _ASSET_TYPE_MAP = {
     "fci": AssetType.FCI,
     "opciones": AssetType.STOCK,
     # Cauciones: aparecen en estadocuenta, no en portafolio
-    "cauciones": AssetType.BONO,
+    "cauciones": AssetType.CAUCION,
 }
 
 
@@ -185,7 +185,7 @@ class IolConnector(BaseConnector):
                     Holding(
                         ticker=f"IOL_CAUCION_{currency.value}",
                         external_name=f"Caución colocada IOL ({currency.value})",
-                        asset_type=AssetType.BONO,
+                        asset_type=AssetType.CAUCION,
                         currency=currency,
                         platform=Platform.IOL,
                         quantity=caucion,

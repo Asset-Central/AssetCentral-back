@@ -13,6 +13,7 @@ class AssetType(str, Enum):
     CASH = "cash"
     CRYPTO = "crypto"
     STOCK = "stock"
+    CAUCION = "caucion"
 
 
 class Currency(str, Enum):
