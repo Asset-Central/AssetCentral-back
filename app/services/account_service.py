@@ -93,6 +93,8 @@ class AccountService:
             return await AccountService._link_prometeo(user_id, data)
         if data.platform == Platform.BINANCE:
             return await AccountService._link_binance(user_id, data)
+        if data.platform == Platform.IOL:
+            return await AccountService._link_iol(user_id, data)
         return await AccountService._link_generic(user_id, data)
 
     @staticmethod
@@ -220,6 +222,62 @@ class AccountService:
 
         total_usd = sum(h.total_valuation for h in holdings)
         label = f"Binance — U$ {total_usd:,.2f}" if holdings else "Binance"
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result = (
+            supabase_admin.table("account")
+            .insert({
+                "user_id": user_id,
+                "platform": data.platform.value,
+                "label": label,
+                "connection_status": ConnectionStatus.ACTIVE.value,
+                "secret_id": str(secret_id),
+                "last_sync": now_iso,
+            })
+            .execute()
+        )
+        account_row = result.data[0]
+        account_id = account_row["id"]
+
+        try:
+            await _persist_holdings(account_id, holdings)
+        except Exception:
+            pass
+
+        return _row_to_account(account_row)
+
+    @staticmethod
+    async def _link_iol(user_id: str, data: LinkAccountRequest) -> Account:
+        """
+        Flujo IOL:
+          1. Valida credenciales llamando a la API y trae posiciones iniciales.
+          2. Guarda credenciales cifradas en Vault.
+          3. Inserta el registro de cuenta con last_sync ya poblado.
+          4. Persiste las posiciones iniciales en historical_balances.
+        """
+        from app.services.connectors.iol import IolConnector
+        from app.services.asset_service import _persist_holdings
+
+        _cleanup_existing_account(user_id, data.platform)
+        connector = IolConnector(account_id="", credentials=data.credentials)
+
+        try:
+            holdings = await connector.get_holdings()
+        except ConnectorError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"No se pudo conectar con InvertirOnline: {exc}",
+            ) from exc
+
+        secret_name = f"account_creds_{user_id}_{data.platform.value}"
+        vault_result = supabase_admin.rpc(
+            "upsert_vault_secret",
+            {"p_secret": json.dumps(data.credentials), "p_name": secret_name},
+        ).execute()
+        secret_id = vault_result.data
+
+        username = data.credentials.get("username", "")
+        label = f"IOL {username}" if username else "InvertirOnline"
 
         now_iso = datetime.now(timezone.utc).isoformat()
         result = (

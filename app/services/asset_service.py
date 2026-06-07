@@ -44,6 +44,9 @@ def _get_connector(platform: Platform, account_id: str, credentials: dict) -> Ba
         case Platform.BINANCE:
             from .connectors.binance import BinanceConnector
             return BinanceConnector(account_id, credentials)
+        case Platform.IOL:
+            from .connectors.iol import IolConnector
+            return IolConnector(account_id, credentials)
         case _:
             creds_with_hint = {**credentials, "_mock_platform": platform.value}
             return MockConnector(account_id, creds_with_hint)
