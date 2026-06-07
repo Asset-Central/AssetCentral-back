@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.v1.router import router
 from app.core.config import settings
@@ -38,6 +39,17 @@ app.add_middleware(
 
 app.include_router(router)
 mount_mcp(app)
+
+
+# Registrar un handler para excepciones no capturadas garantiza que el error
+# pase por CORSMiddleware (que corre fuera de ServerErrorMiddleware) y así los
+# 500 reciban los headers Access-Control-Allow-Origin correctamente.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 @app.get("/health")

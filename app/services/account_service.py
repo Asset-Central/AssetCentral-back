@@ -203,7 +203,7 @@ class AccountService:
 
         try:
             holdings = await connector.get_holdings()
-        except ConnectorError as exc:
+        except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"No se pudo conectar con Binance: {exc}",

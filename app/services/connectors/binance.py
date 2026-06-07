@@ -86,6 +86,8 @@ class BinanceConnector(BaseConnector):
 
                 return sorted(holdings, key=lambda h: -h.total_valuation)
 
+        except ConnectorError:
+            raise
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
             if code in (401, 403):
@@ -93,6 +95,8 @@ class BinanceConnector(BaseConnector):
             raise ConnectorError(f"Binance API error {code}: {exc.response.text[:200]}") from exc
         except httpx.RequestError as exc:
             raise ConnectorError(f"Error de red al conectar con Binance: {exc}") from exc
+        except Exception as exc:
+            raise ConnectorError(f"Error inesperado al procesar respuesta de Binance: {exc}") from exc
 
     async def validate_credentials(self) -> bool:
         api_key = self.credentials.get("api_key", "")
