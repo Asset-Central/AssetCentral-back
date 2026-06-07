@@ -54,10 +54,25 @@ function jsonToMarkdownKv(obj: Record<string, unknown>): string {
 // CORS
 // ==========================================
 
+// Extracts the `sub` claim from a JWT without verifying the signature.
+// Supabase already verified the JWT before the request reaches this function
+// (verify_jwt: true), so signature verification here is redundant.
+function decodeJwtSub(token: string): string | null {
+  try {
+    const [, payload] = token.split(".");
+    const decoded = JSON.parse(
+      atob(payload.replace(/-/g, "+").replace(/_/g, "/")),
+    );
+    return (decoded.sub as string) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Accept, mcp-session-id",
+  "Access-Control-Allow-Headers": "Content-Type, Accept, mcp-session-id, Authorization",
   "Access-Control-Expose-Headers": "mcp-session-id",
 };
 
@@ -97,7 +112,9 @@ interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  handler: (args: Record<string, unknown>) => Promise<ToolResult>;
+  // jwtUserId is the authenticated user extracted from the JWT.
+  // User-scoped tools use it instead of accepting user_id as an argument.
+  handler: (args: Record<string, unknown>, jwtUserId: string | null) => Promise<ToolResult>;
 }
 
 interface ResourceDef {
@@ -105,7 +122,7 @@ interface ResourceDef {
   uri: string;
   description: string;
   mimeType: string;
-  handler: () => Promise<{ contents: Array<{ uri: string; text: string }> }>;
+  handler: (jwtUserId: string | null) => Promise<{ contents: Array<{ uri: string; text: string }> }>;
 }
 
 interface ResourceTemplateDef {
@@ -116,6 +133,7 @@ interface ResourceTemplateDef {
   pattern: RegExp;
   handler: (
     params: Record<string, string>,
+    jwtUserId: string | null,
   ) => Promise<{ contents: Array<{ uri: string; text: string }> }>;
 }
 
@@ -134,7 +152,7 @@ interface PromptDef {
   name: string;
   description: string;
   arguments: PromptArgument[];
-  render: (args: Record<string, string>) => PromptMessage[];
+  render: (args: Record<string, string>, jwtUserId: string) => PromptMessage[];
 }
 
 // ==========================================
@@ -227,7 +245,7 @@ const TOOLS: ToolDef[] = [
       },
       required: ["query"],
     },
-    handler: async ({ query, limit = 10, cursor, query_embedding }) => {
+    handler: async ({ query, limit = 10, cursor, query_embedding }, _jwtUserId) => {
       const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);
       const offset = cursor ? decodeCursor(String(cursor)) : 0;
       const embedding = Array.isArray(query_embedding) ? query_embedding : null;
@@ -276,16 +294,11 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_user_portfolio_summary",
     description:
-      "Returns a flattened financial snapshot for a user from the `llm_user_account_balances_view` denormalized view. " +
+      "Returns a flattened financial snapshot for the authenticated user from the `llm_user_account_balances_view` denormalized view. " +
       "No complex JOINs required. Supports opaque cursor-based pagination for users with many positions.",
     inputSchema: {
       type: "object",
       properties: {
-        user_id: {
-          type: "string",
-          format: "uuid",
-          description: "UUID of the target user",
-        },
         limit: {
           type: "number",
           description: "Max rows to return (default 50)",
@@ -296,16 +309,22 @@ const TOOLS: ToolDef[] = [
           description: "Opaque pagination cursor",
         },
       },
-      required: ["user_id"],
+      required: [],
     },
-    handler: async ({ user_id, limit = 50, cursor }) => {
+    handler: async ({ limit = 50, cursor }, jwtUserId) => {
+      if (!jwtUserId) {
+        return {
+          content: [{ type: "text", text: "**Unauthorized:** valid JWT required." }],
+          isError: true,
+        };
+      }
       const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
       const offset = cursor ? decodeCursor(String(cursor)) : 0;
 
       const { data, error } = await supabase
         .from("llm_user_account_balances_view")
         .select("*")
-        .eq("user_id", user_id)
+        .eq("user_id", jwtUserId)
         .range(offset, offset + safeLimit - 1);
 
       if (error) {
@@ -322,12 +341,7 @@ const TOOLS: ToolDef[] = [
       const rows = (data ?? []) as Record<string, unknown>[];
       if (rows.length === 0) {
         return {
-          content: [
-            {
-              type: "text",
-              text: `_No portfolio data found for user \`${user_id}\`._`,
-            },
-          ],
+          content: [{ type: "text", text: `_No portfolio data found._` }],
         };
       }
 
@@ -341,7 +355,7 @@ const TOOLS: ToolDef[] = [
         content: [
           {
             type: "text",
-            text: `## Portfolio Summary — User \`${user_id}\`\n\n${table}${nextCursor}`,
+            text: `## Portfolio Summary\n\n${table}${nextCursor}`,
           },
         ],
       };
@@ -364,7 +378,7 @@ const TOOLS: ToolDef[] = [
       properties: {},
       required: [],
     },
-    handler: async () => {
+    handler: async (_args, _jwtUserId) => {
       const text = await fetchSchemaMarkdown();
       return { content: [{ type: "text", text }] };
     },
@@ -382,26 +396,27 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_user_financial_profile",
     description:
-      "Returns the self-declared financial profile for a user (age, monthly income, savings capacity, risk aversion, " +
+      "Returns the self-declared financial profile for the authenticated user (age, monthly income, savings capacity, risk aversion, " +
       "investment horizon, financial goals, currency preference). " +
       "Use this context to personalise investment recommendations. " +
       "Returns a message if the user has not yet filled in their profile.",
     inputSchema: {
       type: "object",
-      properties: {
-        user_id: {
-          type: "string",
-          format: "uuid",
-          description: "UUID of the target user",
-        },
-      },
-      required: ["user_id"],
+      properties: {},
+      required: [],
     },
-    handler: async ({ user_id }) => {
+    handler: async (_args, jwtUserId) => {
+      if (!jwtUserId) {
+        return {
+          content: [{ type: "text", text: "**Unauthorized:** valid JWT required." }],
+          isError: true,
+        };
+      }
+
       const { data, error } = await supabase
         .from("users")
         .select("financial_profile")
-        .eq("id", user_id)
+        .eq("id", jwtUserId)
         .maybeSingle();
 
       if (error) {
@@ -412,9 +427,7 @@ const TOOLS: ToolDef[] = [
       }
       if (!data) {
         return {
-          content: [
-            { type: "text", text: `_User \`${user_id}\` not found._` },
-          ],
+          content: [{ type: "text", text: `_User not found._` }],
         };
       }
 
@@ -424,7 +437,7 @@ const TOOLS: ToolDef[] = [
           content: [
             {
               type: "text",
-              text: `_User \`${user_id}\` has not completed their financial profile yet._`,
+              text: `_Financial profile not completed yet._`,
             },
           ],
         };
@@ -434,7 +447,7 @@ const TOOLS: ToolDef[] = [
         content: [
           {
             type: "text",
-            text: `## Financial Profile — User \`${user_id}\`\n\n${jsonToMarkdownKv(profile)}`,
+            text: `## Financial Profile\n\n${jsonToMarkdownKv(profile)}`,
           },
         ],
       };
@@ -493,7 +506,7 @@ const STATIC_RESOURCES: ResourceDef[] = [
     description:
       "Full AssetCentral PostgreSQL schema with COMMENT ON semantic metadata — tables, views, columns and types.",
     mimeType: "text/markdown",
-    handler: async () => {
+    handler: async (_jwtUserId) => {
       const text = await fetchSchemaMarkdown();
       return { contents: [{ uri: "docs://schema/assetcentral", text }] };
     },
@@ -504,7 +517,7 @@ const STATIC_RESOURCES: ResourceDef[] = [
     description:
       "Canonical enum values for platforms, asset types, connection statuses and currencies used across AssetCentral.",
     mimeType: "text/markdown",
-    handler: async () => ({
+    handler: async (_jwtUserId) => ({
       contents: [{ uri: "docs://reference/enums", text: ENUM_REFERENCE }],
     }),
   },
@@ -523,8 +536,14 @@ const RESOURCE_TEMPLATES: ResourceTemplateDef[] = [
       "Replace {user_id} with the target user's UUID.",
     mimeType: "text/markdown",
     pattern: /^docs:\/\/users\/([0-9a-f-]{36})\/profile$/i,
-    handler: async ({ user_id }) => {
+    handler: async ({ user_id }, jwtUserId) => {
       const uri = `docs://users/${user_id}/profile`;
+
+      if (jwtUserId && user_id !== jwtUserId) {
+        return {
+          contents: [{ uri, text: "_Forbidden: you can only read your own profile._" }],
+        };
+      }
 
       // Fetch user profile from public.users
       const [userResult, accountsResult] = await Promise.all([
@@ -578,15 +597,10 @@ const PROMPTS: PromptDef[] = [
   {
     name: "hedge_instrument",
     description:
-      "Genera un plan de cobertura (hedge) para el portfolio de un usuario frente a un instrumento específico " +
+      "Genera un plan de cobertura (hedge) para el portfolio del usuario autenticado frente a un instrumento específico " +
       "(moneda, acción, bono, etc.). Analiza la exposición actual y sugiere instrumentos de cobertura disponibles " +
       "en el mercado argentino.",
     arguments: [
-      {
-        name: "user_id",
-        description: "UUID del usuario cuyo portfolio se va a analizar",
-        required: true,
-      },
       {
         name: "instrument",
         description:
@@ -594,17 +608,17 @@ const PROMPTS: PromptDef[] = [
         required: true,
       },
     ],
-    render: ({ user_id, instrument }) => [
+    render: ({ instrument }, jwtUserId) => [
       {
         role: "user",
         content: {
           type: "text",
-          text: `Necesito construir una estrategia de cobertura (hedge) para el portfolio del usuario \`${user_id}\` frente al instrumento **${instrument}**.
+          text: `Necesito construir una estrategia de cobertura (hedge) para el portfolio del usuario autenticado frente al instrumento **${instrument}**.
 
 Seguí estos pasos en orden:
 
 1. **Relevá el portfolio actual**
-   Llamá a \`get_user_portfolio_summary\` con \`user_id="${user_id}"\`.
+   Llamá a \`get_user_portfolio_summary\` (el user_id viene del JWT autenticado).
    Identificá todas las posiciones expuestas directa o indirectamente a **${instrument}**:
    - Exposición directa: posiciones en el propio instrumento
    - Exposición correlacionada: activos con alta correlación histórica (ej: acciones del mismo sector, bonos en la misma moneda)
@@ -638,24 +652,18 @@ Seguí estos pasos en orden:
   {
     name: "liquidity_analysis",
     description:
-      "Analiza la liquidez del portfolio de un usuario según los plazos de liquidación del mercado argentino: " +
+      "Analiza la liquidez del portfolio del usuario autenticado según los plazos de liquidación del mercado argentino: " +
       "disponible ahora (t+0), en 24hs (t+1) y en 48hs (t+2). Separa el capital líquido del ilíquido.",
-    arguments: [
-      {
-        name: "user_id",
-        description: "UUID del usuario cuyo portfolio se va a analizar",
-        required: true,
-      },
-    ],
-    render: ({ user_id }) => [
+    arguments: [],
+    render: (_args, _jwtUserId) => [
       {
         role: "user",
         content: {
           type: "text",
-          text: `Analizá la liquidez del portfolio del usuario \`${user_id}\` en los tres horizontes temporales del mercado argentino.
+          text: `Analizá la liquidez del portfolio del usuario autenticado en los tres horizontes temporales del mercado argentino.
 
 **Paso 1 — Obtené el portfolio completo**
-Llamá a \`get_user_portfolio_summary\` con \`user_id="${user_id}"\`.
+Llamá a \`get_user_portfolio_summary\` (el user_id viene del JWT autenticado).
 Si hay un campo \`nextCursor\`, paginá hasta obtener todas las posiciones.
 
 **Paso 2 — Clasificá cada instrumento por horizonte de liquidación**
@@ -700,14 +708,9 @@ Incluí también:
   {
     name: "portfolio_diversification",
     description:
-      "Evalúa el nivel de diversificación del portfolio de un usuario en cuatro dimensiones: clase de activo, " +
+      "Evalúa el nivel de diversificación del portfolio del usuario autenticado en cuatro dimensiones: clase de activo, " +
       "moneda, plataforma/broker y exposición geográfica. Calcula índice de concentración y sugiere mejoras.",
     arguments: [
-      {
-        name: "user_id",
-        description: "UUID del usuario cuyo portfolio se va a analizar",
-        required: true,
-      },
       {
         name: "portfolio_id",
         description:
@@ -715,15 +718,15 @@ Incluí también:
         required: false,
       },
     ],
-    render: ({ user_id, portfolio_id }) => [
+    render: ({ portfolio_id }, _jwtUserId) => [
       {
         role: "user",
         content: {
           type: "text",
-          text: `Realizá un análisis de diversificación del portfolio${portfolio_id ? ` \`${portfolio_id}\`` : " completo"} del usuario \`${user_id}\`.
+          text: `Realizá un análisis de diversificación del portfolio${portfolio_id ? ` \`${portfolio_id}\`` : " completo"} del usuario autenticado.
 
 **Paso 1 — Obtené todas las posiciones**
-Llamá a \`get_user_portfolio_summary\` con \`user_id="${user_id}"\`${portfolio_id ? ` y filtrá las filas con \`portfolio_id="${portfolio_id}"\`` : ""}.
+Llamá a \`get_user_portfolio_summary\`${portfolio_id ? ` y filtrá las filas con \`portfolio_id="${portfolio_id}"\`` : ""}.
 Paginá si hay \`nextCursor\` hasta tener el portfolio completo.
 
 **Paso 2 — Analizá 4 dimensiones de diversificación**
@@ -779,15 +782,10 @@ Para cada clase o moneda sub-representada (< 5% del portfolio), llamá a \`searc
   {
     name: "investment_recommendations",
     description:
-      "Genera recomendaciones de inversión personalizadas según el perfil de riesgo del usuario: " +
+      "Genera recomendaciones de inversión personalizadas según el perfil de riesgo del usuario autenticado: " +
       "conservador (preservación del capital), moderado (crecimiento balanceado) o agresivo (máximo crecimiento). " +
       "Analiza el portfolio actual y propone una asignación objetivo con instrumentos concretos del mercado argentino.",
     arguments: [
-      {
-        name: "user_id",
-        description: "UUID del usuario",
-        required: true,
-      },
       {
         name: "risk_profile",
         description:
@@ -795,7 +793,7 @@ Para cada clase o moneda sub-representada (< 5% del portfolio), llamá a \`searc
         required: true,
       },
     ],
-    render: ({ user_id, risk_profile }) => {
+    render: ({ risk_profile }, _jwtUserId) => {
       const profile = risk_profile?.toLowerCase() ?? "moderado";
 
       const allocationGuide =
@@ -838,14 +836,14 @@ Objetivo: crecimiento real en USD a mediano plazo con volatilidad controlada.
           role: "user",
           content: {
             type: "text",
-            text: `Generá recomendaciones de inversión personalizadas para el usuario \`${user_id}\` con perfil de riesgo **${profile.toUpperCase()}**.
+            text: `Generá recomendaciones de inversión personalizadas para el usuario autenticado con perfil de riesgo **${profile.toUpperCase()}**.
 
 ${allocationGuide}
 
 ---
 
 **Paso 1 — Analizá la cartera actual**
-Llamá a \`get_user_portfolio_summary\` con \`user_id="${user_id}"\`.
+Llamá a \`get_user_portfolio_summary\` (el user_id viene del JWT autenticado).
 Paginá si es necesario para obtener todas las posiciones.
 
 Calculá la asignación actual por clase de activo, moneda y plataforma.
@@ -890,7 +888,7 @@ Incluí un párrafo recordando que estas son sugerencias basadas en el perfil de
 // MCP Request Router
 // ==========================================
 
-async function handleMcp(msg: unknown): Promise<Response> {
+async function handleMcp(msg: unknown, jwtUserId: string | null): Promise<Response> {
   const m = msg as Record<string, unknown>;
 
   // JSON-RPC notifications (no `id`) — acknowledge silently
@@ -914,7 +912,7 @@ async function handleMcp(msg: unknown): Promise<Response> {
           resources: { listChanged: false, subscribe: false },
           prompts: { listChanged: false },
         },
-        serverInfo: { name: "assetcentral-mcp", version: "2.1.0" },
+        serverInfo: { name: "assetcentral-mcp", version: "2.3.0" },
       });
 
     case "ping":
@@ -940,6 +938,7 @@ async function handleMcp(msg: unknown): Promise<Response> {
       try {
         const result = await tool.handler(
           (params.arguments ?? {}) as Record<string, unknown>,
+          jwtUserId,
         );
         return ok(id, result);
       } catch (e: unknown) {
@@ -988,7 +987,7 @@ async function handleMcp(msg: unknown): Promise<Response> {
       const staticRes = STATIC_RESOURCES.find((r) => r.uri === uri);
       if (staticRes) {
         try {
-          return ok(id, await staticRes.handler());
+          return ok(id, await staticRes.handler(jwtUserId));
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e);
           return mcpErr(id, -32603, `Resource read failed: ${msg}`);
@@ -1009,7 +1008,7 @@ async function handleMcp(msg: unknown): Promise<Response> {
             paramMap[name] = match[i + 1];
           });
           try {
-            return ok(id, await tpl.handler(paramMap));
+            return ok(id, await tpl.handler(paramMap, jwtUserId));
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
             return mcpErr(id, -32603, `Resource read failed: ${msg}`);
@@ -1042,7 +1041,6 @@ async function handleMcp(msg: unknown): Promise<Response> {
       if (!prompt) {
         return mcpErr(id, -32601, `Unknown prompt: ${promptName}`);
       }
-      // Validate required arguments
       const missing = prompt.arguments
         .filter((a) => a.required && !promptArgs[a.name])
         .map((a) => a.name);
@@ -1053,9 +1051,12 @@ async function handleMcp(msg: unknown): Promise<Response> {
           `Missing required argument(s): ${missing.join(", ")}`,
         );
       }
+      if (!jwtUserId) {
+        return mcpErr(id, -32001, "Unauthorized: valid JWT required to render prompt.");
+      }
       return ok(id, {
         description: prompt.description,
-        messages: prompt.render(promptArgs),
+        messages: prompt.render(promptArgs, jwtUserId),
       });
     }
 
@@ -1080,6 +1081,12 @@ Deno.serve(async (req) => {
     });
   }
 
+  // Extract authenticated user from JWT. Supabase already verified the
+  // signature (verify_jwt: true), so we only need to decode the sub claim.
+  const authHeader = req.headers.get("Authorization") ?? "";
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  const jwtUserId = token ? decodeJwtSub(token) : null;
+
   let msg: unknown;
   try {
     msg = await req.json();
@@ -1090,7 +1097,7 @@ Deno.serve(async (req) => {
   try {
     if (Array.isArray(msg)) {
       // JSON-RPC batch
-      const responses = await Promise.all(msg.map(handleMcp));
+      const responses = await Promise.all(msg.map((m) => handleMcp(m, jwtUserId)));
       const bodies = await Promise.all(
         responses.map((r) => (r.status === 202 ? null : r.json())),
       );
@@ -1098,7 +1105,7 @@ Deno.serve(async (req) => {
         headers: { "Content-Type": "application/json", ...CORS_HEADERS },
       });
     }
-    return await handleMcp(msg);
+    return await handleMcp(msg, jwtUserId);
   } catch (e: unknown) {
     const errMsg = e instanceof Error ? e.message : String(e);
     console.error("Unhandled MCP error:", errMsg);
