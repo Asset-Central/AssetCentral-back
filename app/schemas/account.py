@@ -36,6 +36,7 @@ class PlatformConfig(BaseModel):
 class Account(BaseModel):
     id: str
     platform: Platform
+    nombre: str | None = None
     label: str | None = None
     connection_status: ConnectionStatus
     last_sync: datetime | None
@@ -44,4 +45,5 @@ class Account(BaseModel):
 
 class LinkAccountRequest(BaseModel):
     platform: Platform
+    nombre: str | None = None
     credentials: dict[str, str]

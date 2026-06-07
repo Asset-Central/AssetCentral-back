@@ -74,7 +74,7 @@ class AccountService:
     async def list_accounts(user_id: str) -> list[Account]:
         result = (
             supabase_admin.table("account")
-            .select("id, platform, label, connection_status, last_sync, error_message")
+            .select("id, platform, nombre, label, connection_status, last_sync, error_message")
             .eq("user_id", user_id)
             .order("created_at")
             .execute()
@@ -109,6 +109,7 @@ class AccountService:
             .insert({
                 "user_id": user_id,
                 "platform": data.platform.value,
+                "nombre": data.nombre or _get_display_name(data.platform),
                 "label": label,
                 "connection_status": ConnectionStatus.ACTIVE.value,
                 "secret_id": str(secret_id),
@@ -166,6 +167,7 @@ class AccountService:
             .insert({
                 "user_id": user_id,
                 "platform": data.platform.value,
+                "nombre": data.nombre or _get_display_name(data.platform),
                 "label": label,
                 "connection_status": ConnectionStatus.ACTIVE.value,
                 "secret_id": str(secret_id),
@@ -223,6 +225,7 @@ class AccountService:
             .insert({
                 "user_id": user_id,
                 "platform": data.platform.value,
+                "nombre": data.nombre or _get_display_name(data.platform),
                 "label": label,
                 "connection_status": ConnectionStatus.ACTIVE.value,
                 "secret_id": str(secret_id),
@@ -279,6 +282,7 @@ class AccountService:
             .insert({
                 "user_id": user_id,
                 "platform": data.platform.value,
+                "nombre": data.nombre or _get_display_name(data.platform),
                 "label": label,
                 "connection_status": ConnectionStatus.ACTIVE.value,
                 "secret_id": str(secret_id),
@@ -365,10 +369,18 @@ def _row_to_account(row: dict) -> Account:
     return Account(
         id=row["id"],
         platform=Platform(row["platform"]),
+        nombre=row.get("nombre"),
         label=row.get("label"),
         connection_status=ConnectionStatus(row["connection_status"]),
         last_sync=row.get("last_sync"),
         error_message=row.get("error_message"),
+    )
+
+
+def _get_display_name(platform: Platform) -> str:
+    return next(
+        (c.display_name for c in PLATFORM_CONFIGS if c.platform == platform),
+        platform.value,
     )
 
 
