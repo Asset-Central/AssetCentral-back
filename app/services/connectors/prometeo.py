@@ -122,7 +122,7 @@ class PrometeoConnector(BaseConnector):
             currency_label = "ARS" if currency_str == "ARS" else "USD"
             holdings.append(
                 Holding(
-                    ticker=f"PROMETEO_{currency_str}",
+                    ticker=currency_str,
                     external_name=f"Banco Nación - {currency_label}",
                     asset_type=AssetType.CASH,
                     currency=currency,
