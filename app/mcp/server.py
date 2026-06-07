@@ -14,26 +14,30 @@ from fastapi_mcp.auth.proxy import (
 )
 from fastapi_mcp.types import AuthConfig
 
-SUPABASE_ISSUER = "https://geqltnpxydhpwysapexz.supabase.co/auth/v1"
+from app.mcp.oauth import router as oauth_router
+
+BACKEND_URL = "https://assetcentral-back-production.up.railway.app"
 MCP_CLIENT_ID = "assetcentral-mcp"
 MCP_CLIENT_SECRET = "assetcentral-mcp-secret"
 
 OAUTH_METADATA = {
-    "issuer": SUPABASE_ISSUER,
-    "authorization_endpoint": f"{SUPABASE_ISSUER}/oauth/authorize",
-    "token_endpoint": f"{SUPABASE_ISSUER}/oauth/token",
-    "jwks_uri": f"{SUPABASE_ISSUER}/.well-known/jwks.json",
-    "scopes_supported": ["openid", "profile", "email"],
+    "issuer": BACKEND_URL,
+    "authorization_endpoint": f"{BACKEND_URL}/oauth/authorize",
+    "token_endpoint": f"{BACKEND_URL}/oauth/token",
+    "registration_endpoint": f"{BACKEND_URL}/oauth/register",
+    "scopes_supported": ["openid"],
     "response_types_supported": ["code"],
-    "grant_types_supported": ["authorization_code", "refresh_token"],
+    "grant_types_supported": ["authorization_code"],
     "code_challenge_methods_supported": ["S256"],
-    "registration_endpoint": "https://assetcentral-back-production.up.railway.app/oauth/register",
 }
 
 
 def mount_mcp(app: FastAPI) -> None:
+    # Registrar rutas OAuth antes del MCP
+    app.include_router(oauth_router)
+
     auth_config = AuthConfig(
-        issuer=SUPABASE_ISSUER,
+        issuer=BACKEND_URL,
         custom_oauth_metadata=OAUTH_METADATA,
     )
 
