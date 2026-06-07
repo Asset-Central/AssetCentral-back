@@ -150,6 +150,7 @@ class IolConnector(BaseConnector):
             return []
 
         data = resp.json()
+        import json; print("IOL estadocuenta raw:", json.dumps(data, indent=2, default=str))
         cuentas = data.get("cuentas") or []
 
         holdings: list[Holding] = []
